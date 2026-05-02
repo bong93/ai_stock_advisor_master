@@ -8,3 +8,4 @@ beautifulsoup4
 requests
 ta
 scikit-learn
+finance-datareader
