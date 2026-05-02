@@ -266,7 +266,7 @@ def get_v6_market_rankings(market_type="KOSPI", top_n=50):
 
 # --- 4. 메인 대시보드 UI ---
 st.set_page_config(page_title="AI Quant Radar V6", layout="wide")
-MODEL_PATH = r"D:\KOSPI_KOSDAK_DAYTRAIDER_AI_PRJ\model_output\weather_advisor_v6_master_D.pt" 
+MODEL_PATH = r"weather_advisor_v6_master_D.pt" 
 model, device = load_trained_model(MODEL_PATH)
 
 if check_password(): st.sidebar.success("✅ 트레이더 인증 완료")
