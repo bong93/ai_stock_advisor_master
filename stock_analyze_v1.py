@@ -4,7 +4,6 @@ import pandas as pd
 import numpy as np
 import torch
 import torch.nn as nn
-from pykrx import stock
 from datetime import datetime, timedelta
 import plotly.graph_objects as go
 from bs4 import BeautifulSoup
@@ -12,8 +11,11 @@ import requests
 import ta
 from sklearn.preprocessing import RobustScaler
 import time
+import os
 import warnings
 
+# 🌟 최상단 배치 (Streamlit 설정)
+st.set_page_config(page_title="AI Quant Radar V6", layout="wide")
 warnings.filterwarnings('ignore', category=FutureWarning)
 
 # --- 1. V6 마스터 AI 모델 구조 ---
@@ -29,42 +31,43 @@ class SwingBinaryMasterGRU(nn.Module):
         c = torch.sum(w * out, dim=1)
         return self.fc(c)
 
-# --- 2. 보안 패스워드 ---
+# --- 2. 보안 접속 (Enter 키 대응) ---
 def check_password():
     def password_entered():
+        # 비밀번호가 맞으면 세션 상태 업데이트 후 입력값 삭제
         if st.session_state["password"] == "dlghdud121!":
             st.session_state["password_correct"] = True
-            del st.session_state["password"] 
+            del st.session_state["password"]
         else:
             st.session_state["password_correct"] = False
 
     if "password_correct" not in st.session_state:
         st.title("🛡️ AI Quant Radar 접속 보안")
-        st.text_input("보안 코드를 입력하세요", type="password", on_change=password_entered, key="password")
+        # on_change를 사용하여 Enter 입력 시 바로 password_entered 함수 실행
+        st.text_input("보안 코드를 입력하고 Enter를 누르세요", type="password", on_change=password_entered, key="password")
         st.info("승인된 트레이더만 접속 가능합니다.")
-        st.stop() 
+        st.stop()
         return False
     elif not st.session_state["password_correct"]:
         st.title("🛡️ AI Quant Radar 접속 보안")
-        st.text_input("보안 코드를 입력하세요", type="password", on_change=password_entered, key="password")
+        st.text_input("보안 코드를 입력하고 Enter를 누르세요", type="password", on_change=password_entered, key="password")
         st.error("❌ 보안 코드가 일치하지 않습니다.")
-        st.stop() 
+        st.stop()
         return False
-    else: return True
-    
-# --- 3. 유틸리티 및 데이터 파이프라인 ---
+    return True
+
+# --- 3. 데이터 및 분석 엔진 ---
 @st.cache_resource
 def load_trained_model(path):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = SwingBinaryMasterGRU(input_size=19)
     try:
+        if not os.path.exists(path): return None, device
         state_dict = torch.load(path, map_location=device, weights_only=True)
         model.load_state_dict(state_dict)
-        model.to(device)
-        model.eval()
+        model.to(device).eval()
         return model, device
-    except Exception as e: 
-        return None, device
+    except: return None, device
 
 @st.cache_data(ttl=3600)
 def get_macro_dashboard_data():
@@ -78,7 +81,7 @@ def get_macro_dashboard_data():
         except: continue
     return data
 
-@st.cache_data(ttl=3600*12)
+@st.cache_data(ttl=3600*6)
 def load_macro_feature_data():
     end_dt = datetime.today().strftime('%Y-%m-%d')
     start_dt = (datetime.today() - timedelta(days=500)).strftime('%Y-%m-%d')
@@ -89,51 +92,30 @@ def load_macro_feature_data():
     macro_df['nasdaq_ret'] = macro_df['nasdaq'].pct_change()
     return macro_df[['usd_krw_ret', 'nasdaq_ret']]
 
-# 🌟 [문제 완벽 해결] 네이버 수급 크롤러 V2 (tbody 우회)
 def get_naver_supply_demand(code):
     try:
         url = f"https://finance.naver.com/item/frgn.naver?code={code}"
-        headers = {'User-agent': 'Mozilla/5.0'}
-        res = requests.get(url, headers=headers, timeout=5) # 타임아웃 추가
+        res = requests.get(url, headers={'User-agent': 'Mozilla/5.0'}, timeout=5)
         soup = BeautifulSoup(res.text, 'html.parser')
-        
         tables = soup.find_all('table', class_='type2')
         if not tables or len(tables) < 2: return 0, 0, None
-            
-        # 💡 [핵심] tbody를 찾지 않고, 테이블 안의 모든 tr을 다 가져옵니다.
         rows = tables[1].find_all('tr')
-        
         for row in rows:
             cols = row.find_all('td')
-            # 네이버는 데이터가 있는 정상적인 행은 td가 9개 이상입니다.
-            if len(cols) >= 9: 
-                date_str = cols[0].text.strip()
-                # 날짜 데이터가 비어있지 않은 첫 번째 유효한 행을 찾으면 바로 리턴
-                if date_str: 
-                    try:
-                        # 5번째가 기관, 6번째가 외국인
-                        inst_str = cols[5].text.strip().replace(',', '')
-                        for_str = cols[6].text.strip().replace(',', '')
-                        inst_net = int(inst_str) if inst_str else 0
-                        for_net = int(for_str) if for_str else 0
-                        return inst_net, for_net, date_str
-                    except:
-                        break # 숫자 변환 실패 시 종료
+            if len(cols) >= 9 and cols[0].text.strip(): 
+                inst_str = cols[5].text.strip().replace(',', '')
+                for_str = cols[6].text.strip().replace(',', '')
+                return int(inst_str), int(for_str), cols[0].text.strip()
         return 0, 0, None
-    except:
-        return 0, 0, None
+    except: return 0, 0, None
 
 def prepare_master_features(ticker, df_chart, macro_df):
     if len(df_chart) < 60: return pd.DataFrame(), None, 0, 0
-    
-    df = df_chart.copy()
-    df = df.join(macro_df, how='left')
-    df.ffill(inplace=True)
-    df.bfill(inplace=True)
-
+    df = df_chart.copy().join(macro_df, how='left')
+    df.ffill().bfill(inplace=True)
     close, high, low, vol = df['Close'], df['High'], df['Low'], df['Volume']
-    feats = pd.DataFrame(index=df.index)
     
+    feats = pd.DataFrame(index=df.index)
     feats['ret'] = close.pct_change()
     feats['dist_ma'] = close / (close.rolling(20).mean() + 1e-8)
     feats['macd_hist'] = ta.trend.MACD(close).macd_diff()
@@ -150,27 +132,50 @@ def prepare_master_features(ticker, df_chart, macro_df):
     feats['cmf'] = ta.volume.ChaikinMoneyFlowIndicator(high, low, close, vol).chaikin_money_flow()
     feats['will_r'] = ta.momentum.WilliamsRIndicator(high, low, close).williams_r() / -100.0
     
-    time.sleep(0.05)
-    # 🌟 개선된 네이버 수급 엔진 호출
     inst_net, for_net, valid_date = get_naver_supply_demand(ticker)
+    feats['inst_ratio'] = 0.0; feats['foreigner_ratio'] = 0.0 
+    last_idx = feats.index[-1]; last_vol = vol.iloc[-1] + 1e-8
+    feats.loc[last_idx, 'inst_ratio'] = inst_net / last_vol
+    feats.loc[last_idx, 'foreigner_ratio'] = for_net / last_vol
+    feats['usd_krw_ret'] = df['usd_krw_ret']; feats['nasdaq_ret'] = df['nasdaq_ret']
     
-    feats['inst_ratio'] = 0.0 
-    feats['foreigner_ratio'] = 0.0 
-    
-    last_idx = feats.index[-1]
-    last_vol = vol.iloc[-1] + 1e-8
-    
-    # 0으로 나누기 방지 및 비율 계산
-    inst_ratio = inst_net / last_vol
-    for_ratio = for_net / last_vol
-    
-    feats.loc[last_idx, 'inst_ratio'] = inst_ratio
-    feats.loc[last_idx, 'foreigner_ratio'] = for_ratio
-    
-    feats['usd_krw_ret'] = df['usd_krw_ret']
-    feats['nasdaq_ret'] = df['nasdaq_ret']
-    
-    return feats.dropna(), valid_date, inst_ratio, for_ratio
+    return feats.dropna(), valid_date, inst_net/last_vol, for_net/last_vol
+
+def generate_ai_judgment_brief(name, prob, f_r, i_r):
+    line1 = f"🚀 **{name} AI 판단:** 상승 확률 **{prob:.1f}%**로 " + ("강력 매수 저격 구간" if prob >= 75 else "매수 우위 구간")
+    if f_r > 0 and i_r > 0: line2 = "✅ **수급 상황:** 외인/기관 쌍끌이 매수 포착. 신뢰도 높음."
+    elif f_r > 0: line2 = "✅ **수급 상황:** 외국인 매수세가 지지 중. 수급 긍정적."
+    else: line2 = "⚠️ **수급 상황:** 메이저 수급이 약함. 차트 중심 대응 필요."
+    return f"{line1}\n\n{line2}"
+
+@st.cache_data(ttl=3600)
+def get_v6_market_rankings(market_type="KOSPI", top_n=50):
+    try:
+        df_list = fdr.StockListing(market_type)
+        if market_type == "ETF/KR":
+             tickers = df_list.sort_values('Volume', ascending=False).head(top_n)['Symbol'].tolist()
+             names = df_list.sort_values('Volume', ascending=False).head(top_n)['Name'].tolist()
+        else:
+             tickers = df_list.sort_values('Marcap', ascending=False).head(top_n)['Code'].tolist()
+             names = df_list.sort_values('Marcap', ascending=False).head(top_n)['Name'].tolist()
+        ticker_name_map = dict(zip(tickers, names))
+    except: return pd.DataFrame()
+    results = []
+    prog = st.progress(0)
+    macro_df = load_macro_feature_data()
+    for i, ticker in enumerate(tickers):
+        try:
+            df_chart = fdr.DataReader(ticker, (datetime.now() - timedelta(days=200)).strftime('%Y-%m-%d'))
+            feats_df, v_date, i_r, f_r = prepare_master_features(ticker, df_chart, macro_df)
+            if feats_df.empty: continue
+            inp = torch.FloatTensor(RobustScaler().fit_transform(feats_df.tail(60).values)).unsqueeze(0).to(device)
+            with torch.no_grad():
+                prob = torch.softmax(model(inp), dim=1).cpu().numpy()[0][1] * 100
+            results.append({"종목명": ticker_name_map[ticker], "코드": ticker, "상승확률": prob, "현재가": int(df_chart['Close'].iloc[-1])})
+        except: continue
+        prog.progress((i + 1) / len(tickers))
+    prog.empty()
+    return pd.DataFrame(results)
 
 @st.cache_data
 def get_top10_news(name):
@@ -207,125 +212,21 @@ def generate_ai_briefing(name, buy_prob, for_ratio, inst_ratio, rsi, stoch, vali
     
     return briefing
 
-@st.cache_data(ttl=3600)
-def get_v6_market_rankings(market_type="KOSPI", top_n=50):
-    try:
-        df_list = fdr.StockListing(market_type)
-        if market_type == "ETF/KR":
-             tickers = df_list.sort_values('Volume', ascending=False).head(top_n)['Symbol'].tolist()
-             names = df_list.sort_values('Volume', ascending=False).head(top_n)['Name'].tolist()
-        else:
-             tickers = df_list.sort_values('Marcap', ascending=False).head(top_n)['Code'].tolist()
-             names = df_list.sort_values('Marcap', ascending=False).head(top_n)['Name'].tolist()
-        ticker_name_map = dict(zip(tickers, names))
-    except: return pd.DataFrame()
-        
-    results = []
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    macro_df = load_macro_feature_data()
-    
-    for i, ticker in enumerate(tickers):
-        name = ticker_name_map[ticker]
-        status_text.text(f"📡 {market_type} 일봉 타점 탐지 중: {name}...")
-        try:
-            df_chart = fdr.DataReader(ticker, (datetime.now() - timedelta(days=200)).strftime('%Y-%m-%d'))
-            feats_df, valid_date, inst_ratio, for_ratio = prepare_master_features(ticker, df_chart, macro_df)
-            
-            if feats_df.empty or len(feats_df) < 60: continue
-            
-            recent = feats_df.tail(60).values
-            scaled = RobustScaler().fit_transform(recent)
-            input_t = torch.FloatTensor(scaled).unsqueeze(0).to(device)
-            
-            with torch.no_grad():
-                output = model(input_t)
-                probs = torch.softmax(output, dim=1).cpu().numpy()[0]
-            
-            buy_prob = probs[1] * 100 
-            
-            sd_status = "🔥 양매수" if inst_ratio > 0.001 and for_ratio > 0.001 else (
-                        "🟢 외인매수" if for_ratio > 0.001 else (
-                        "🔵 기관매수" if inst_ratio > 0.001 else "❄️ 양매도/관망"))
-            
-            if market_type == "ETF/KR": sd_status = "ETF(수급 미적용)"
-            
-            results.append({
-                "종목명": name,
-                "코드": ticker,
-                "내일 상승확률": buy_prob, 
-                "현재가": int(df_chart['Close'].iloc[-1]),
-                "수급 동향(1일)": sd_status
-            })
-        except: continue
-        progress_bar.progress((i + 1) / len(tickers))
-        
-    progress_bar.empty()
-    status_text.empty()
-    return pd.DataFrame(results)
-
-# --- 4. 메인 대시보드 UI ---
-st.set_page_config(page_title="AI Quant Radar V6", layout="wide")
-MODEL_PATH = r"weather_advisor_v6_master_D.pt" 
+# --- 4. 메인 실행부 ---
+MODEL_PATH = "D:\KOSPI_KOSDAK_DAYTRAIDER_AI_PRJ\model_output\weather_advisor_v6_master_D.pt"
 model, device = load_trained_model(MODEL_PATH)
 
-if check_password(): st.sidebar.success("✅ 트레이더 인증 완료")
-
-st.sidebar.title("📡 AI Quant Radar")
-menu = st.sidebar.radio("모드 선택", ["🌐 글로벌 매크로 & ETF", "🎯 V6 스윙 타점 스캐너", "🔍 단일 종목 X-Ray"])
-
-if menu == "🌐 글로벌 매크로 & ETF":
-    st.title("🌐 글로벌 매크로 & ETF 레이더")
-    st.write("시장 전체의 자금 흐름과 분위기를 파악합니다.")
-    
+if check_password():
+    # 🌟 사이드바: 글로벌 매크로 상시 노출
     idx_data = get_macro_dashboard_data()
-    idx_cols = st.columns(len(idx_data))
-    for i, (k, v) in enumerate(idx_data.items()):
-        color = "normal" if k == "USD/KRW" else ("inverse" if v[1] < 0 else "normal")
-        idx_cols[i].metric(k, f"{v[0]:,.2f}", f"{v[1]:+.2f}%", delta_color=color)
+    st.sidebar.title("🌍 Global Macro")
+    for k, v in idx_data.items():
+        st.sidebar.metric(k, f"{v[0]:,.2f}", f"{v[1]:+.2f}%")
+    st.sidebar.markdown("---")
     
-    st.markdown("---")
-    st.subheader("🔥 AI 거래대금 상위 ETF 방향성 스캔")
-    if st.button("ETF 스캔 시작 (Top 20)"):
-        with st.spinner("거래대금 상위 ETF 타점 분석 중..."):
-            etf_df = get_v6_market_rankings("ETF/KR", top_n=20)
-            if not etf_df.empty:
-                display_df = etf_df.copy()
-                display_df['내일 상승확률'] = display_df['내일 상승확률'].apply(lambda x: f"{x:.1f}%")
-                st.dataframe(display_df.sort_values("내일 상승확률", ascending=False).reset_index(drop=True), use_container_width=True)
+    menu = st.sidebar.radio("모드 선택", ["🔍 단일 종목 X-Ray", "🎯 V6 스윙 타점 스캐너", "🌐 글로벌 매크로 & ETF"], index=0)
 
-elif menu == "🎯 V6 스윙 타점 스캐너":
-    st.title("🎯 V6 저격수 스캐너 (Daily)")
-    st.info(f"📅 실시간 네이버 금융 수급 연동 중 (주말/휴일 완벽 대응)")
-    
-    if model is None:
-        st.error(f"❌ AI 모델 파일을 불러오지 못했습니다. 경로를 확인해주세요: \n`{MODEL_PATH}`")
-        st.stop()
-
-    m_type = st.radio("타겟 시장 선택", ["KOSDAQ", "KOSPI"], horizontal=True)
-    if st.button(f"🚀 {m_type} 시총 Top 100 타점 스캔"):
-        with st.spinner("네이버 금융에서 외국인/기관 수급 데이터를 긁어오고 있습니다. 약 1~2분 소요됩니다..."):
-            rank_df = get_v6_market_rankings(m_type, top_n=100)
-    
-        if rank_df.empty: st.error("⚠️ 데이터를 불러오지 못했습니다.")
-        else:
-            display_df = rank_df.copy()
-            sniper_df = display_df[display_df['내일 상승확률'] >= 75.0].sort_values("내일 상승확률", ascending=False).reset_index(drop=True)
-            display_df['내일 상승확률'] = display_df['내일 상승확률'].apply(lambda x: f"{x:.1f}%")
-            
-            st.markdown("---")
-            if not sniper_df.empty:
-                st.success(f"🎯 **[Sniper] 75% 이상 초고도 확신 매수 타점 포착 ({len(sniper_df)}건)**")
-                sniper_df['내일 상승확률'] = sniper_df['내일 상승확률'].apply(lambda x: f"{x:.1f}%")
-                st.dataframe(sniper_df, use_container_width=True)
-            else:
-                st.warning("🎯 오늘 장은 75% 이상 확신할 만한 완벽한 매수 타점이 없습니다. (관망 권장)")
-
-            st.markdown("---")
-            st.write("📋 전체 스캔 결과 (참고용)")
-            st.dataframe(display_df.sort_values("내일 상승확률", ascending=False).reset_index(drop=True), use_container_width=True)
-
-elif menu == "🔍 단일 종목 X-Ray":
+if menu == "🔍 단일 종목 X-Ray":
     st.title("🔍 단일 종목 X-Ray")
     target_input = st.sidebar.text_input("종목명/코드", value="삼성전자")
     
@@ -412,3 +313,54 @@ elif menu == "🔍 단일 종목 X-Ray":
         st.subheader(f"📰 {name} 최신 뉴스")
         news = get_top10_news(name)
         for n in news: st.markdown(f"• [{n['title']}]({n['link']})")
+        
+elif menu == "🌐 글로벌 매크로 & ETF":
+    st.title("🌐 글로벌 매크로 & ETF 레이더")
+    st.write("시장 전체의 자금 흐름과 분위기를 파악합니다.")
+    
+    idx_data = get_macro_dashboard_data()
+    idx_cols = st.columns(len(idx_data))
+    for i, (k, v) in enumerate(idx_data.items()):
+        color = "normal" if k == "USD/KRW" else ("inverse" if v[1] < 0 else "normal")
+        idx_cols[i].metric(k, f"{v[0]:,.2f}", f"{v[1]:+.2f}%", delta_color=color)
+    
+    st.markdown("---")
+    st.subheader("🔥 AI 거래대금 상위 ETF 방향성 스캔")
+    if st.button("ETF 스캔 시작 (Top 50)"):
+        with st.spinner("거래대금 상위 ETF 타점 분석 중..."):
+            etf_df = get_v6_market_rankings("ETF/KR", top_n=50)
+            if not etf_df.empty:
+                display_df = etf_df.copy()
+                display_df['상승확률'] = display_df['상승확률'].apply(lambda x: f"{x:.1f}%")
+                st.dataframe(display_df.sort_values("상승확률", ascending=False).reset_index(drop=True), use_container_width=True)
+
+elif menu == "🎯 V6 스윙 타점 스캐너":
+    st.title("🎯 V6 저격수 스캐너 (Daily)")
+    st.info(f"📅 실시간 네이버 금융 수급 연동 중 (주말/휴일 완벽 대응)")
+    
+    if model is None:
+        st.error(f"❌ AI 모델 파일을 불러오지 못했습니다. 경로를 확인해주세요: \n`{MODEL_PATH}`")
+        st.stop()
+
+    m_type = st.radio("타겟 시장 선택", ["KOSDAQ", "KOSPI"], horizontal=True)
+    if st.button(f"🚀 {m_type} 시총 Top 100 타점 스캔"):
+        with st.spinner("네이버 금융에서 외국인/기관 수급 데이터를 긁어오고 있습니다. 약 1~2분 소요됩니다..."):
+            rank_df = get_v6_market_rankings(m_type, top_n=100)
+    
+        if rank_df.empty: st.error("⚠️ 데이터를 불러오지 못했습니다.")
+        else:
+            display_df = rank_df.copy()
+            sniper_df = display_df[display_df['상승확률'] >= 75.0].sort_values("상승확률", ascending=False).reset_index(drop=True)
+            display_df['상승확률'] = display_df['상승확률'].apply(lambda x: f"{x:.1f}%")
+            
+            st.markdown("---")
+            if not sniper_df.empty:
+                st.success(f"🎯 **[Sniper] 75% 이상 초고도 확신 매수 타점 포착 ({len(sniper_df)}건)**")
+                sniper_df['상승확률'] = sniper_df['상승확률'].apply(lambda x: f"{x:.1f}%")
+                st.dataframe(sniper_df, use_container_width=True)
+            else:
+                st.warning("🎯 오늘 장은 75% 이상 확신할 만한 완벽한 매수 타점이 없습니다. (관망 권장)")
+
+            st.markdown("---")
+            st.write("📋 전체 스캔 결과 (참고용)")
+            st.dataframe(display_df.sort_values("상승확률", ascending=False).reset_index(drop=True), use_container_width=True)
