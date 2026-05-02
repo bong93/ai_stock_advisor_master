@@ -224,15 +224,30 @@ def run_scanner(mode="morning"):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", type=str, required=True, choices=["morning", "afternoon", "monthly"])
+    # 🌟 startup(가동 확인) 모드 추가
+    parser.add_argument("--mode", type=str, required=True, choices=["morning", "afternoon", "monthly", "startup"])
     args = parser.parse_args()
     
     kst = pytz.timezone('Asia/Seoul')
     now = datetime.now(kst)
     print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] {args.mode} 모드 실행 중...")
     
-    # 오전 모드일 때 매월 1일이면 월간 알람 먼저 전송
-    if args.mode == "morning" and now.day == 1:
-        run_scanner("monthly")
+    # 🎯 0. [수동 테스트용] 시스템 가동 확인 알람
+    if args.mode == "startup":
+        send_discord("🟢 [시스템 온라인] AI Quant V6 Radar 가동 완료", 
+                     [{"name": "상태 보고", "value": "디스코드 웹훅이 정상 연결되었으며, 정해진 스케줄에 따라 분석을 시작할 준비를 마쳤습니다. 성투하십시오!", "inline": False}], 
+                     3066993) # 초록색 띠
+    
+    # 🎯 스캔 시작 전 "작동 중" 알람 먼저 발송
+    else:
+        mode_name = "🌅 아침 장전 브리핑" if args.mode == "morning" else "🏁 장 마감 채점표"
+        send_discord(f"⏳ [분석 시작] {mode_name} 생성 중...", 
+                     [{"name": "진행 상황", "value": "AI가 시장 데이터를 수집하고 연산 중입니다. 결과가 나올 때까지 잠시만 기다려주세요 (약 1~2분 소요).", "inline": False}], 
+                     3447003) # 파란색 띠
         
-    run_scanner(args.mode)
+        # 오전 모드일 때 매월 1일이면 월간 알람 먼저 전송
+        if args.mode == "morning" and now.day == 1:
+            run_scanner("monthly")
+            
+        # 메인 스캐너 실행 (분석 완료 후 결과 발송)
+        run_scanner(args.mode)
