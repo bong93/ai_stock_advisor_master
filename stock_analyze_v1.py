@@ -213,7 +213,7 @@ def generate_ai_briefing(name, buy_prob, for_ratio, inst_ratio, rsi, stoch, vali
     return briefing
 
 # --- 4. 메인 실행부 ---
-MODEL_PATH = "D:\KOSPI_KOSDAK_DAYTRAIDER_AI_PRJ\model_output\weather_advisor_v6_master_D.pt"
+MODEL_PATH = "weather_advisor_v6_master_D.pt"
 model, device = load_trained_model(MODEL_PATH)
 
 if check_password():
