@@ -16,7 +16,7 @@ import warnings
 
 warnings.filterwarnings('ignore', category=FutureWarning)
 
-# 🌟 1. V6 마스터 AI 모델 구조 (19 Feature)
+# 🌟 1. V6 마스터 AI 모델 구조 (스트림릿과 동일한 19 Feature)
 class SwingBinaryMasterGRU(nn.Module):
     def __init__(self, input_size=19, hidden_size=128, num_layers=2):
         super(SwingBinaryMasterGRU, self).__init__()
@@ -31,12 +31,11 @@ class SwingBinaryMasterGRU(nn.Module):
 
 # 🌟 2. 설정 변수
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
-# GitHub Actions에서 실행될 때를 위해 상대 경로 사용
 MODEL_PATH = "weather_advisor_v6_master_D.pt" 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 def load_bot_model():
-    model = SwingBinaryMasterGRU(input_size=19)
+    model = SwingBinaryMasterGRU(input_size=19) # 19개 피처 적용
     try:
         model.load_state_dict(torch.load(MODEL_PATH, map_location=device, weights_only=True))
         model.to(device)
@@ -63,7 +62,7 @@ def send_discord(title, fields_data, color):
     }
     requests.post(DISCORD_WEBHOOK_URL, json=payload, headers={"Content-Type": "application/json"})
 
-# V6 데이터 파이프라인
+# --- 3. V6 데이터 파이프라인 (스트림릿 안정화 엔진 적용) ---
 def load_macro_feature_data():
     end_dt = datetime.today().strftime('%Y-%m-%d')
     start_dt = (datetime.today() - timedelta(days=200)).strftime('%Y-%m-%d')
@@ -96,12 +95,12 @@ def get_naver_supply_demand(code):
 
 def extract_features_v6(ticker, df_chart, macro_df):
     if len(df_chart) < 60: return pd.DataFrame()
-    df = df_chart.copy().join(macro_df, how='left')
-    df.ffill(inplace=True); df.bfill(inplace=True)
+    df = df_chart.copy().join(macro_df, how='left').ffill().bfill()
 
     close, high, low, vol = df['Close'], df['High'], df['Low'], df['Volume']
     feats = pd.DataFrame(index=df.index)
     
+    # 정확한 19개 피처 추출
     feats['ret'] = close.pct_change()
     feats['dist_ma'] = close / (close.rolling(20).mean() + 1e-8)
     feats['macd_hist'] = ta.trend.MACD(close).macd_diff()
@@ -118,7 +117,6 @@ def extract_features_v6(ticker, df_chart, macro_df):
     feats['cmf'] = ta.volume.ChaikinMoneyFlowIndicator(high, low, close, vol).chaikin_money_flow()
     feats['will_r'] = ta.momentum.WilliamsRIndicator(high, low, close).williams_r() / -100.0
     
-    time.sleep(0.05)
     inst_net, for_net = get_naver_supply_demand(ticker)
     feats['inst_ratio'] = 0.0; feats['foreigner_ratio'] = 0.0 
     
@@ -131,12 +129,13 @@ def extract_features_v6(ticker, df_chart, macro_df):
     
     return feats.dropna()
 
+# --- 4. 스캐너 및 알람 실행 로직 ---
 def run_scanner(mode="morning"):
     model = load_bot_model()
     if not model: return
     
     try:
-        # 코스닥 시총 상위 100개로 타겟팅 (V6 모델은 코스닥에서 승률이 좋음)
+        # 코스닥 시총 상위 100개 스캔
         df_list = fdr.StockListing('KOSDAQ')
         tickers = df_list.sort_values('Marcap', ascending=False).head(100)['Code'].tolist()
         names = df_list.sort_values('Marcap', ascending=False).head(100)['Name'].tolist()
@@ -150,7 +149,7 @@ def run_scanner(mode="morning"):
         try:
             df = fdr.DataReader(ticker, (datetime.now() - pd.Timedelta(days=150)).strftime('%Y-%m-%d'))
             
-            # [타임머신 로직] 오후 채점 모드일 경우 오늘 캔들 가리기
+            # 🌟 [핵심] 타임머신 로직: 오후 채점 시 오늘 캔들 가리기
             if mode == "afternoon" and len(df) > 2:
                 pred_df = df.iloc[:-1] 
             else:
@@ -167,7 +166,6 @@ def run_scanner(mode="morning"):
                 output = model(input_t)
                 probs = torch.softmax(output, dim=1).cpu().numpy()[0]
             
-            # V6는 이진분류 (0: 하락/패스, 1: 상승)
             res_dict = {
                 "종목명": t_map[ticker],
                 "상승확률": probs[1] * 100, 
@@ -189,10 +187,9 @@ def run_scanner(mode="morning"):
         fields = [{"name": f"🏆 {i+1}위: {row['종목명']}", "value": f"📈 AI 확신도: **{row['상승확률']:.1f}%** | 현재가: {row['예측시점가격']:,}원", "inline": False} for i, row in top.reset_index().iterrows()]
         send_discord("🗓️ [월간] 이번 달 집중 공략 AI 추천주 TOP 5", fields, 3066993)
 
-    # 🎯 2. 매일 08:45 알람 (1~5위)
+    # 🎯 2. 매일 08:45 장 시작 전 알람 (Top 5 / Bottom 5)
     elif mode == "morning":
         top_up = rank_df.sort_values("상승확률", ascending=False).head(5)
-        # 하락 확률은 (100 - 상승확률)
         top_down = rank_df.sort_values("상승확률", ascending=True).head(5)
         
         fields = [{"name": f"🚀 상승 저격 {i+1}위: {row['종목명']}", "value": f"확률: **{row['상승확률']:.1f}%** | 어제 종가: {row['예측시점가격']:,}원", "inline": False} for i, row in top_up.reset_index().iterrows()]
@@ -201,7 +198,7 @@ def run_scanner(mode="morning"):
         
         send_discord("🌅 [장 시작 전] 오늘 장 AI 주도주 & 회피주 브리핑", fields, 15158332)
 
-    # 🎯 3. 매일 16:00 알람 (아침 예측 결과 채점표 1~5위)
+    # 🎯 3. 매일 16:00 장 마감 후 알람 (채점표)
     elif mode == "afternoon":
         top_up = rank_df.sort_values("상승확률", ascending=False).head(5)
         fields = []
@@ -234,6 +231,7 @@ if __name__ == "__main__":
     now = datetime.now(kst)
     print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] {args.mode} 모드 실행 중...")
     
+    # 오전 모드일 때 매월 1일이면 월간 알람 먼저 전송
     if args.mode == "morning" and now.day == 1:
         run_scanner("monthly")
         
