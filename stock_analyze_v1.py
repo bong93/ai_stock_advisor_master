@@ -264,7 +264,7 @@ def draw_ichimoku_chart(df_plot):
 
 # --- 4. 메인 실행부 ---
 # 🚨 대표님 환경에 맞는 모델 경로 유지
-MODEL_PATH = r"D:\KOSPI_KOSDAK_DAYTRAIDER_AI_PRJ\model_output\weather_advisor_v6_master_D.pt"
+MODEL_PATH = r"weather_advisor_v6_master_D.pt"
 model, device = load_trained_model(MODEL_PATH)
 
 if check_password():
