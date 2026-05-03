@@ -206,10 +206,17 @@ def run_scanner(mode="morning"):
             
             final_prob = (gru_prob * 0.5 + lgb_prob * 0.5) * 100
             
+            # 🌟 [수정포인트 1] 적정가, 목표가(+4%), 손절가(-3%) 계산 로직 추가
+            curr_price = int(pred_df['Close'].iloc[-1])
+            tp_price = int(curr_price * 1.04) # 일봉 목표가 4%
+            sl_price = int(curr_price * 0.97) # 일봉 손절가 -3%
+            
             res_dict = {
                 "종목명": t_map[ticker],
                 "상승확률": final_prob, 
-                "예측시점가격": int(pred_df['Close'].iloc[-1])
+                "예측시점가격": curr_price,
+                "목표가": tp_price,
+                "손절가": sl_price
             }
             
             if mode == "afternoon":
@@ -226,13 +233,14 @@ def run_scanner(mode="morning"):
         a_class = rank_df[(rank_df["상승확률"] >= 60.0) & (rank_df["상승확률"] < 70.0)].sort_values("상승확률", ascending=False)
         
         fields = []
+        # 🌟 [수정포인트 2] 디스코드 메시지에 목표가/손절가 포매팅 추가
         if not s_class.empty:
             fields.append({"name": "🔥 **[S급] 초고도 확신 타점 (승률 85%)**", "value": "적극적인 비중 베팅을 고려할 만한 강력한 상승 신호입니다.", "inline": False})
-            fields.extend([{"name": f"🎯 {row['종목명']}", "value": f"확률: **{row['상승확률']:.1f}%** | 어제 종가: {row['예측시점가격']:,}원", "inline": False} for _, row in s_class.iterrows()])
+            fields.extend([{"name": f"🎯 {row['종목명']}", "value": f"확률: **{row['상승확률']:.1f}%**\n💵 적정가: `{row['예측시점가격']:,}원`\n🚀 목표가: `{row['목표가']:,}원` (+4%)\n🛑 손절가: `{row['손절가']:,}원` (-3%)", "inline": False} for _, row in s_class.iterrows()])
             
         if not a_class.empty:
             fields.append({"name": "🚀 **[A급] 강한 확신 타점 (승률 60%↑)**", "value": "매수 우위 구간입니다. 수급과 호가를 체크하며 진입하세요.", "inline": False})
-            fields.extend([{"name": f"✅ {row['종목명']}", "value": f"확률: **{row['상승확률']:.1f}%** | 어제 종가: {row['예측시점가격']:,}원", "inline": False} for _, row in a_class.iterrows()])
+            fields.extend([{"name": f"✅ {row['종목명']}", "value": f"확률: **{row['상승확률']:.1f}%**\n💵 적정가: `{row['예측시점가격']:,}원`\n🚀 목표가: `{row['목표가']:,}원` (+4%)\n🛑 손절가: `{row['손절가']:,}원` (-3%)", "inline": False} for _, row in a_class.iterrows()])
             
         if not fields:
             fields.append({"name": "🛑 **관망 권장**", "value": "오늘 장은 60% 이상 확신할 만한 S급/A급 매수 타점이 포착되지 않았습니다.", "inline": False})
@@ -240,11 +248,23 @@ def run_scanner(mode="morning"):
         send_discord("🌅 [08:45] 오늘 장 AI 주도주 브리핑", fields, 15158332)
 
     elif mode == "afternoon":
+        # 🌟 [수정포인트 3] 오후 알림: S/A급이 없을 때 가장 높은 확률 1개만 평가하는 로직 추가
         picks = rank_df[rank_df["상승확률"] >= 60.0].sort_values("상승확률", ascending=False)
         fields = []
         
         if picks.empty:
-            fields.append({"name": "💤 채점 생략", "value": "오늘 아침에는 추천된 S/A급 종목이 없었습니다.", "inline": False})
+            # S/A급이 없으면 전체에서 상승확률 1위 종목 1개만 추출
+            top_pick = rank_df.sort_values("상승확률", ascending=False).head(1)
+            row = top_pick.iloc[0]
+            change_pct = ((row['오늘종가'] - row['예측시점가격']) / row['예측시점가격']) * 100
+            emoji = "🔴 상승 (놓침)" if change_pct > 0 else ("🔵 하락 (방어성공)" if change_pct < 0 else "⚪ 보합")
+            
+            fields.append({"name": "💤 오늘 아침 추천 타점 없음 (관망 채점)", "value": "아침에는 60% 이상의 종목이 없어 매수를 쉬었습니다. 가장 점수가 높았던(B급 1등) 종목의 오후 결과를 복기합니다.", "inline": False})
+            fields.append({
+                "name": f"📝 {row['종목명']} (아침 확률: {row['상승확률']:.1f}%)", 
+                "value": f"시작가: {row['예측시점가격']:,}원 ➡️ 마감가: {row['오늘종가']:,}원\n관망 결과: {emoji} **({change_pct:+.2f}%)**", 
+                "inline": False
+            })
         else:
             hit_count = 0
             total_profit = 0
