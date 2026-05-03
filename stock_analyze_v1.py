@@ -21,9 +21,36 @@ from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import networkx as nx
 
 # 🌟 최상단 배치 (Streamlit 설정)
-st.set_page_config(page_title="AI Quant Master", layout="wide")
+st.set_page_config(page_title="AI Quant Master", layout="wide", initial_sidebar_state="expanded")
 warnings.filterwarnings('ignore', category=FutureWarning)
 warnings.filterwarnings("ignore", message="X does not have valid feature names")
+
+# 🌟 [신규] 모바일 반응형 UI 강제 최적화 (CSS Injection)
+st.markdown("""
+<style>
+    /* 1. 모바일 환경에서 탭(Tab) 버튼이 한 줄로 예쁘게 나오도록 수정 */
+    div[data-baseweb="tab-list"] {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px;
+    }
+    
+    /* 2. 스마트폰 세로 모드일 때 메트릭(숫자) 크기 자동 조절 */
+    @media (max-width: 600px) {
+        h1 { font-size: 24px !important; }
+        h2 { font-size: 20px !important; }
+        h3 { font-size: 18px !important; }
+        div[data-testid="stMetricValue"] { font-size: 22px !important; }
+        
+        /* 3. 모바일에서 데이터프레임 폰트 및 여백 최소화 (렌더링 속도 개선) */
+        .dataframe { font-size: 12px !important; }
+        .stDataFrame { padding: 0 !important; }
+        
+        /* 4. 모바일에서 버튼을 화면 꽉 차게 만들어 터치하기 쉽게 변경 */
+        .stButton>button { width: 100% !important; height: 50px !important; font-size: 16px !important; font-weight: bold !important; }
+    }
+</style>
+""", unsafe_allow_html=True)
 
 # 🌟 주린이(초보자)용 용어 해설 사전
 JURIN_DICT = {
@@ -695,7 +722,7 @@ if check_password():
     st.markdown("---") # 🌟 매크로와 메인 콘텐츠를 구분하는 선
     
     # 🌟 메뉴에 네트워크 맵 추가
-    menu = st.sidebar.radio("모드 선택", ["단일 종목 스캐너", "섹터 주도주 레이더", "스윙 타점 스캐너", "자금 흐름 네트워크 맵", "ETF 스캐너"], index=0)
+    menu = st.sidebar.radio("모드 선택", ["단일 종목 스캐너", "섹터 주도주 레이더", "스윙 타점 스캐너", "자금 흐름 네트워크 맵", "ETF 스캐너"], horizontal=True, label_visibility="collapsed")
 
 if menu == "단일 종목 스캐너":
     st.title("단일 종목 스캐너 (AI + News + 시뮬레이터)")
