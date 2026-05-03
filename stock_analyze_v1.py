@@ -402,8 +402,8 @@ def draw_correlation_network(market="KOSPI", top_n=30):
         return go.Figure()
 
 # --- 5. 메인 실행부 ---
-GRU_PATH = r"D:\KOSPI_KOSDAK_DAYTRAIDER_AI_PRJ\model_output\weather_advisor_v6_master_D.pt"
-LGB_PATH = r"D:\KOSPI_KOSDAK_DAYTRAIDER_AI_PRJ\model_output\weather_advisor_v6_master_D_lgb.pkl"
+GRU_PATH = r"weather_advisor_v6_master_D.pt"
+LGB_PATH = r"weather_advisor_v6_master_D_lgb.pkl"
 model_gru, model_lgb, device = load_ensemble_models(GRU_PATH, LGB_PATH)
 
 if check_password():
