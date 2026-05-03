@@ -59,6 +59,21 @@ def check_password():
     return True
 
 # --- 3. 데이터 및 분석 엔진 ---
+@st.cache_data(ttl=3600*24) # 하루 동안 리스트 저장 (속도 최적화)
+def get_all_stock_list():
+    try:
+        # KRX 종목과 ETF 종목을 한 번에 가져와서 "종목명 (코드)" 형태로 만듭니다.
+        df_krx = fdr.StockListing('KRX')
+        df_etf = fdr.StockListing('ETF/KR').rename(columns={'Symbol':'Code'})
+        
+        krx_list = df_krx['Name'] + " (" + df_krx['Code'] + ")"
+        etf_list = df_etf['Name'] + " (" + df_etf['Code'] + ")"
+        
+        # 두 리스트를 합친 후 리스트 형태로 반환
+        return pd.concat([krx_list, etf_list]).dropna().tolist()
+    except:
+        return ["삼성전자 (005930)"] # 에러 방지용 기본값
+    
 @st.cache_resource
 def load_ensemble_models(gru_path, lgb_path):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -318,8 +333,8 @@ def draw_ichimoku_chart(df_plot):
 
 # --- 4. 메인 실행부 ---
 # 🚨 모델 파일 두 개가 같은 폴더에 있어야 합니다.
-GRU_PATH = r"weather_advisor_v6_master_D.pt"
-LGB_PATH = r"weather_advisor_v6_master_D_lgb.pkl"
+GRU_PATH = r"D:\KOSPI_KOSDAK_DAYTRAIDER_AI_PRJ\model_output\weather_advisor_v6_master_D.pt"
+LGB_PATH = r"D:\KOSPI_KOSDAK_DAYTRAIDER_AI_PRJ\model_output\weather_advisor_v6_master_D_lgb.pkl"
 
 model_gru, model_lgb, device = load_ensemble_models(GRU_PATH, LGB_PATH)
 
@@ -334,18 +349,25 @@ if check_password():
 
 if menu == "🔍 단일 종목 X-Ray":
     st.title("🔍 단일 종목 X-Ray")
-    target_input = st.sidebar.text_input("종목명/코드", value="삼성전자")
     
-    with st.spinner("종목 검색 중..."):
-        listing = pd.concat([fdr.StockListing('KRX'), fdr.StockListing('ETF/KR').rename(columns={'Symbol':'Code'})])
-        match = listing[listing['Name'].str.contains(target_input, na=False) | (listing['Code'] == target_input)].drop_duplicates('Code')
-
-    if match.empty:
-        st.error(f"❌ '{target_input}' 종목을 찾을 수 없습니다.")
-    elif model_gru is None or model_lgb is None:
+    # 🌟 1. 전체 종목 리스트 불러오기 (자동완성용)
+    all_stocks = get_all_stock_list()
+    default_idx = all_stocks.index("삼성전자 (005930)") if "삼성전자 (005930)" in all_stocks else 0
+    
+    # 🌟 2. 텍스트 입력창 대신 selectbox 사용 (여기에 타이핑하면 자동완성 필터링이 됩니다!)
+    selected_item = st.sidebar.selectbox("종목 검색 (초성/이름/코드 입력)", options=all_stocks, index=default_idx)
+    
+    if model_gru is None or model_lgb is None:
         st.error(f"❌ AI 모델 로드 실패. 파일 경로를 확인하세요.")
     else:
-        ticker, name = match['Code'].iloc[0], match['Name'].iloc[0]
+        import re
+        # 🌟 3. 선택된 문자열 "삼성전자 (005930)" 에서 이름과 코드를 분리
+        match = re.match(r"(.*) \((.*)\)", selected_item)
+        if match:
+            name = match.group(1)
+            ticker = match.group(2)
+        else:
+            name, ticker = "삼성전자", "005930"
         
         with st.spinner(f"[{name}] 데이터 분석 중..."):
             try:
