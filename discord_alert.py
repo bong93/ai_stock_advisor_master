@@ -10,7 +10,7 @@ import pytz
 import ta
 from sklearn.preprocessing import RobustScaler
 import FinanceDataReader as fdr
-from pykrx import stock
+from bs4 import BeautifulSoup
 import joblib
 import warnings
 
@@ -64,7 +64,7 @@ def send_discord(title, fields_data, color):
     }
     requests.post(DISCORD_WEBHOOK_URL, json=payload, headers={"Content-Type": "application/json"})
 
-# --- 3. V6 데이터 파이프라인 (24 피처) ---
+# --- 3. V6 데이터 파이프라인 (네이버 수급 80일치 + 24 피처) ---
 def load_macro_feature_data():
     end_dt = datetime.today().strftime('%Y-%m-%d')
     start_dt = (datetime.today() - timedelta(days=200)).strftime('%Y-%m-%d')
@@ -82,27 +82,48 @@ def load_macro_feature_data():
     macro_df['vix_ret'] = macro_df['vix'].pct_change()
     return macro_df[['usd_krw_ret', 'nasdaq_ret', 'kospi_ret', 'kosdaq_ret', 'vix_ret']]
 
-def get_supply_demand_data(ticker, start_date, end_date):
-    start_str = pd.to_datetime(start_date).strftime('%Y%m%d')
-    end_str = pd.to_datetime(end_date).strftime('%Y%m%d')
-    try:
-        df = stock.get_market_trading_volume_by_date(start_str, end_str, ticker)
-        if df is None or df.empty: return pd.DataFrame()
-        df_sd = df[['기관합계', '외국인합계', '개인']].copy()
-        df_sd.columns = ['inst_net', 'foreigner_net', 'retail_net']
-        return df_sd
-    except: return pd.DataFrame()
+# 🔥 pykrx를 대체하는 네이버 과거 수급 데이터 수집 엔진
+def get_naver_supply_demand_history(code, pages=4):
+    records = []
+    for p in range(1, pages + 1):
+        try:
+            url = f"https://finance.naver.com/item/frgn.naver?code={code}&page={p}"
+            res = requests.get(url, headers={'User-agent': 'Mozilla/5.0'}, timeout=5)
+            soup = BeautifulSoup(res.text, 'html.parser')
+            tables = soup.find_all('table', class_='type2')
+            if len(tables) < 2: continue
+            
+            rows = tables[1].find_all('tr')
+            for row in rows:
+                cols = row.find_all('td')
+                if len(cols) >= 9 and cols[0].text.strip():
+                    date_str = cols[0].text.strip().replace('.', '-')
+                    inst_str = cols[5].text.strip().replace(',', '').replace('+', '')
+                    for_str = cols[6].text.strip().replace(',', '').replace('+', '')
+                    try:
+                        records.append({
+                            'Date': pd.to_datetime(date_str),
+                            'inst_net': int(inst_str),
+                            'foreigner_net': int(for_str)
+                        })
+                    except: pass
+        except: continue
+        
+    if records:
+        return pd.DataFrame(records).set_index('Date').sort_index()
+    return pd.DataFrame()
 
 def extract_features_v6(ticker, df_chart, macro_df):
     if len(df_chart) < 60: return pd.DataFrame()
     
-    start_date = df_chart.index[0].strftime('%Y-%m-%d')
-    end_date = df_chart.index[-1].strftime('%Y-%m-%d')
-    sd_df = get_supply_demand_data(ticker, start_date, end_date)
-    
+    # 🔥 네이버 수급 데이터 결합
+    sd_df = get_naver_supply_demand_history(ticker, pages=4)
     df = df_chart.copy().join(macro_df, how='left')
-    if not sd_df.empty: df = df.join(sd_df, how='left')
-    else: df['inst_net'] = 0; df['foreigner_net'] = 0; df['retail_net'] = 0
+    
+    if not sd_df.empty: 
+        df = df.join(sd_df, how='left')
+    else: 
+        df['inst_net'] = 0; df['foreigner_net'] = 0
         
     df.ffill(inplace=True); df.bfill(inplace=True)
 
@@ -152,7 +173,6 @@ def run_scanner(mode="morning"):
     if not model_gru or not model_lgb: return
     
     try:
-        # 🌟 V6 마스터 모델이 KOSPI로 훈련되었으므로 KOSPI 100으로 스캔합니다.
         df_list = fdr.StockListing('KOSPI')
         tickers = df_list.sort_values('Marcap', ascending=False).head(100)['Code'].tolist()
         names = df_list.sort_values('Marcap', ascending=False).head(100)['Name'].tolist()
@@ -166,7 +186,6 @@ def run_scanner(mode="morning"):
         try:
             df = fdr.DataReader(ticker, (datetime.now() - pd.Timedelta(days=150)).strftime('%Y-%m-%d'))
             
-            # 오후 채점 시 오늘 캔들 가리기
             if mode == "afternoon" and len(df) > 2:
                 pred_df = df.iloc[:-1] 
             else:
@@ -177,7 +196,6 @@ def run_scanner(mode="morning"):
             
             scaled = RobustScaler().fit_transform(f_df.tail(60).values)
             
-            # 🌟 앙상블 예측 로직
             input_t = torch.FloatTensor(scaled).unsqueeze(0).to(device)
             with torch.no_grad():
                 gru_prob = torch.softmax(model_gru(input_t), dim=1).cpu().numpy()[0][1]
@@ -200,7 +218,6 @@ def run_scanner(mode="morning"):
     rank_df = pd.DataFrame(results)
     if rank_df.empty: return
 
-    # 🎯 1. 매일 08:45 장 시작 전 알람 (S급/A급 선별)
     if mode == "morning":
         s_class = rank_df[rank_df["상승확률"] >= 70.0].sort_values("상승확률", ascending=False)
         a_class = rank_df[(rank_df["상승확률"] >= 60.0) & (rank_df["상승확률"] < 70.0)].sort_values("상승확률", ascending=False)
@@ -219,9 +236,7 @@ def run_scanner(mode="morning"):
             
         send_discord("🌅 [08:45] 오늘 장 AI 주도주 브리핑", fields, 15158332)
 
-    # 🎯 2. 매일 16:00 장 마감 후 알람 (S급/A급 채점)
     elif mode == "afternoon":
-        # 아침에 알람을 보냈던 60% 이상 종목만 채점
         picks = rank_df[rank_df["상승확률"] >= 60.0].sort_values("상승확률", ascending=False)
         fields = []
         
