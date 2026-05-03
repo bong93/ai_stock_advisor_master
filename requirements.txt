@@ -10,3 +10,4 @@ ta
 scikit-learn
 finance-datareader
 lightgbm
+transformers
