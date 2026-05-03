@@ -68,6 +68,67 @@ def load_finbert_model():
 
 fin_tokenizer, fin_model = load_finbert_model()
 
+# --- [신규/수정] 네이버 금융 직접 크롤링 엔진 ---
+@st.cache_data(ttl=1800) # 30분마다 갱신
+def get_naver_market_data(group_type="upjong"):
+    """
+    네이버 금융에서 업종(upjong) 또는 테마(theme) 리스트를 직접 크롤링합니다.
+    야후 파이낸스 404 에러를 원천 차단합니다.
+    """
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36'}
+    url = f"https://finance.naver.com/sise/sise_group.naver?type={group_type}"
+    
+    try:
+        res = requests.get(url, headers=headers, timeout=10)
+        res.encoding = 'euc-kr' # 네이버 금융 전용 인코딩
+        soup = BeautifulSoup(res.text, 'html.parser')
+        
+        data = []
+        table = soup.select_one('table.type_1')
+        if not table: return pd.DataFrame()
+
+        rows = table.select('tr')
+        for row in rows:
+            cols = row.select('td')
+            if len(cols) >= 2:
+                link_tag = cols[0].find('a')
+                if link_tag:
+                    name = link_tag.text.strip()
+                    code = link_tag['href'].split('no=')[-1]
+                    change_text = cols[1].text.strip().replace('%', '').replace('+', '')
+                    try:
+                        change_val = float(change_text)
+                    except: change_val = 0.0
+                    
+                    data.append({"이름": name, "코드": code, "등락률": change_val})
+        
+        df = pd.DataFrame(data)
+        return df.sort_values("등락률", ascending=False).reset_index(drop=True)
+    except Exception as e:
+        st.error(f"데이터 수집 중 오류: {e}")
+        return pd.DataFrame()
+    
+def generate_live_sector_briefing(df, g_type="업종"):
+    if df.empty: return "현재 분석 가능한 데이터가 없습니다."
+    
+    top = df.iloc[0]
+    bottom = df.iloc[-1]
+    avg_change = df['등락률'].mean()
+    
+    status = "🔥 강세" if avg_change > 0.5 else ("❄️ 약세" if avg_change < -0.5 else "☁️ 혼조세")
+    
+    briefing = f"### 🚀 실시간 {g_type} 수급 브리핑\n\n"
+    briefing += f"현재 시장의 {g_type} 기류는 평균 **{avg_change:+.2f}%** 변동하며 **{status}**를 기록 중입니다.\n\n"
+    briefing += f"1. **🏆 주도 섹터:** **[{top['이름']}]**이(가) **{top['등락률']:+.2f}%**로 시장의 자금을 강력하게 흡수하고 있습니다.\n"
+    briefing += f"2. **⚠️ 하락 섹터:** **[{bottom['이름']}]** 섹터는 **{bottom['등락률']:+.2f}%**로 가장 부진한 흐름을 보입니다.\n\n"
+    
+    if "조선" in top['이름'] or "운수장비" in top['이름']:
+        briefing += "> 💡 **특이사항:** 조선/중공업 사이클에 강한 수급이 포착되었습니다. 대형 수주 뉴스나 환율 효과를 점검하십시오.\n"
+    elif "건설" in top['이름']:
+        briefing += "> 💡 **특이사항:** 건설/인프라 섹터에 온기가 돌고 있습니다. 정책 변화나 금리 동향이 반영되었을 가능성이 높습니다.\n"
+        
+    return briefing
+
 def get_google_news_titles(keyword, display=100, days=30):
     search_query = f"{keyword} 주식 when:{days}d"
     enc_keyword = urllib.parse.quote(search_query)
@@ -190,6 +251,44 @@ def get_naver_supply_demand_history(code, pages=4):
                     except: pass
         except: continue
     return pd.DataFrame(records).set_index('Date').sort_index() if records else pd.DataFrame()
+
+# --- [신규 기능] 섹터 주도주 데이터 분석 엔진 ---
+@st.cache_data(ttl=3600)
+def get_sector_performance():
+    """KRX 주요 업종 지수를 분석하여 섹터별 수익률을 반환합니다."""
+    # 분석할 주요 섹터 지수 딕셔너리 (fdr 지수 코드 기반)
+    sectors = {
+        "반도체": "KS001", "IT가전": "KS002", "조선": "KS012", "건설": "KS013", 
+        "운수장비": "KS014", "철강": "KS015", "화학": "KS016", "비철금속": "KS017",
+        "에너지": "KS018", "바이오": "KS019", "은행": "KS021", "증권": "KS022", 
+        "보험": "KS023", "음식료": "KS025", "유통": "KS026"
+    }
+    
+    sector_results = []
+    end_date = datetime.now().strftime('%Y-%m-%d')
+    start_date = (datetime.now() - timedelta(days=40)).strftime('%Y-%m-%d')
+    
+    for name, code in sectors.items():
+        try:
+            # KRX 업종 지수 데이터 (KRX 종목코드가 아닌 업종 지수 코드로 조회 시 fdr.DataReader 활용)
+            df = fdr.DataReader(code, start_date, end_date)
+            if len(df) < 20: continue
+            
+            curr = df['Close'].iloc[-1]
+            prev_1d = df['Close'].iloc[-2]
+            prev_5d = df['Close'].iloc[-6]
+            prev_20d = df['Close'].iloc[-21] if len(df) >= 21 else df['Close'].iloc[0]
+            
+            sector_results.append({
+                "섹터명": name,
+                "현재지수": round(curr, 2),
+                "1일(%)": round(((curr - prev_1d) / prev_1d) * 100, 2),
+                "5일(%)": round(((curr - prev_5d) / prev_5d) * 100, 2),
+                "20일(%)": round(((curr - prev_20d) / prev_20d) * 100, 2)
+            })
+        except: continue
+        
+    return pd.DataFrame(sector_results)
 
 def prepare_master_features(ticker, df_chart, macro_df):
     if len(df_chart) < 60: return pd.DataFrame(), None, 0, 0, None
@@ -341,7 +440,6 @@ def draw_correlation_network(market="KOSPI", top_n=30):
         corr_matrix = df_prices.corr()
         
         G = nx.Graph()
-        # 🌟 개선 1: 임계값을 0.7로 높여 확실한 연결만 남김
         THRESHOLD = 0.7 
         
         for i in range(len(corr_matrix.columns)):
@@ -350,46 +448,72 @@ def draw_correlation_network(market="KOSPI", top_n=30):
                 if abs(corr) >= THRESHOLD:
                     G.add_edge(corr_matrix.columns[i], corr_matrix.columns[j], weight=corr)
                     
-        # 🌟 개선 2: 반발력(k)을 높여 노드 간 간격을 넓힘 (복잡도 감소)
         pos = nx.spring_layout(G, k=1.2, seed=42) 
         
+        # --- 1. 엣지(선) 데이터 생성 ---
         edge_x, edge_y = [], []
+        # 🌟 엣지 툴팁용 중앙점 데이터
+        edge_mid_x, edge_mid_y, edge_hover_text = [], [], []
+        
         for edge in G.edges(data=True):
             x0, y0 = pos[edge[0]]
             x1, y1 = pos[edge[1]]
             edge_x.extend([x0, x1, None])
             edge_y.extend([y0, y1, None])
             
-        # 🌟 개선 3: 선의 투명도를 조절하여 배경처럼 처리
+            # 선의 중앙 지점 계산 및 툴팁 텍스트 생성
+            # 🌟 툴팁이 더 잘 걸리도록 중앙뿐만 아니라 여러 지점에 포인트를 심습니다.
+            for ratio in [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]: # 30%, 50%, 70% 지점에 포인트 배치
+                edge_mid_x.append(x0 + (x1 - x0) * ratio)
+                edge_mid_y.append(y0 + (y1 - y0) * ratio)
+                edge_hover_text.append(f"🔗 연결: {edge[0]} ↔ {edge[1]}<br>📊 상관계수: {edge[2]['weight']:.4f}")
+            
         edge_trace = go.Scatter(x=edge_x, y=edge_y, 
-                                line=dict(width=0.5, color='rgba(136, 136, 136, 0.4)'), 
+                                line=dict(width=0.7, color='rgba(150, 150, 150, 0.4)'), 
                                 hoverinfo='none', mode='lines')
+
+        # 🌟 엣지 중앙에 보이지 않는 점을 배치하여 툴팁 구현
+        edge_info_trace = go.Scatter(
+            x=edge_mid_x, y=edge_mid_y, mode='markers',
+            marker=dict(size=5, color='rgba(0,0,0,0)'), # 투명한 점
+            text=edge_hover_text, hoverinfo='text'
+        )
         
-        node_x, node_y, text_labels, node_size = [], [], [], []
+        # --- 2. 노드(종목) 데이터 생성 ---
+        node_x, node_y, node_labels, node_hover_text, node_size = [], [], [], [], []
+        
         for node in G.nodes():
             x, y = pos[node]
             node_x.append(x)
             node_y.append(y)
-            text_labels.append(node)
-            # 🌟 개선 4: 연결된 선이 많을수록(주도주일수록) 구슬 크기를 키움
-            node_size.append(15 + (G.degree(node) * 3)) 
+            node_labels.append(node)
+            
+            # 해당 종목의 최근 누적 수익률 계산 (정보 제공용)
+            cum_ret = (df_prices[node] + 1).prod() - 1
+            degree = G.degree(node)
+            
+            # 🌟 노드 툴팁 텍스트 고도화
+            node_hover_text.append(
+                f"🏢 <b>{node}</b><br>" +
+                f"📈 60일 누적수익률: {cum_ret*100:+.2f}%<br>" +
+                f"🕸️ 연결된 종목 수: {degree}개<br>" +
+                f"💡 {node}와 동조화된 종목들을 확인하세요."
+            )
+            node_size.append(18 + (degree * 3)) 
             
         node_trace = go.Scatter(
-            x=node_x, y=node_y, mode='markers+text', text=text_labels, 
-            textposition="bottom center", # 텍스트 위치 하단 고정
-            hoverinfo='text', 
+            x=node_x, y=node_y, mode='markers+text', 
+            text=node_labels, textposition="bottom center",
+            hovertext=node_hover_text, hoverinfo='text', 
             marker=dict(
-                showscale=True, 
-                colorscale='Viridis', 
-                size=node_size,
+                showscale=True, colorscale='Viridis', size=node_size,
                 color=[G.degree(n) for n in G.nodes()], 
-                line_width=2,
-                colorbar=dict(title="연결 강도", thickness=15)
+                line_width=2, colorbar=dict(title="연결도", thickness=15)
             ))
             
-        fig = go.Figure(data=[edge_trace, node_trace],
+        fig = go.Figure(data=[edge_trace, edge_info_trace, node_trace],
              layout=go.Layout(
-                title=dict(text=f'🕸️ {market} 핵심 테마 동조화 맵 (상관계수 {THRESHOLD} 이상)', font=dict(size=16)),
+                title=dict(text=f'🕸️ {market} 핵심 테마 동조화 맵 (상계 {THRESHOLD}↑)', font=dict(size=16)),
                 showlegend=False, hovermode='closest',
                 margin=dict(b=20,l=5,r=5,t=40),
                 xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
@@ -400,10 +524,10 @@ def draw_correlation_network(market="KOSPI", top_n=30):
     except Exception as e:
         st.error(f"네트워크 맵 생성 중 오류: {e}")
         return go.Figure()
-
+    
 # --- 5. 메인 실행부 ---
-GRU_PATH = r"weather_advisor_v6_master_D.pt"
-LGB_PATH = r"weather_advisor_v6_master_D_lgb.pkl"
+GRU_PATH = r"D:\KOSPI_KOSDAK_DAYTRAIDER_AI_PRJ\model_output\weather_advisor_v6_master_D.pt"
+LGB_PATH = r"D:\KOSPI_KOSDAK_DAYTRAIDER_AI_PRJ\model_output\weather_advisor_v6_master_D_lgb.pkl"
 model_gru, model_lgb, device = load_ensemble_models(GRU_PATH, LGB_PATH)
 
 if check_password():
@@ -425,7 +549,7 @@ if check_password():
     st.markdown("---") # 🌟 매크로와 메인 콘텐츠를 구분하는 선
     
     # 🌟 메뉴에 네트워크 맵 추가
-    menu = st.sidebar.radio("모드 선택", ["단일 종목 스캐너", "스윙 타점 스캐너", "자금 흐름 네트워크 맵", "ETF 스캐너"], index=0)
+    menu = st.sidebar.radio("모드 선택", ["단일 종목 스캐너", "섹터 주도주 레이더", "스윙 타점 스캐너", "자금 흐름 네트워크 맵", "ETF 스캐너"], index=0)
 
 if menu == "단일 종목 스캐너":
     st.title("단일 종목 스캐너 (AI + News + 시뮬레이터)")
@@ -533,6 +657,44 @@ if menu == "단일 종목 스캐너":
                 else: st.error("데이터가 부족하여 분석할 수 없습니다.")
             except Exception as e: st.error(f"분석 중 오류 발생: {e}")
 
+elif menu == "섹터 주도주 레이더":
+        st.title("섹터 & 테마 머니플로우")
+        st.info("시장의 큰 파도(업종)와 빠른 물결(테마)을 동시에 분석하여 자금의 종착지를 찾습니다.")
+        
+        tab1, tab2 = st.tabs(["업종별 사이클 (Industry)", "테마별 수급 (Theme)"])
+        
+        with tab1:
+            with st.spinner("업종별 실시간 데이터를 수집 중..."):
+                up_df = get_naver_market_data("upjong")
+                if not up_df.empty:
+                    st.markdown(generate_live_sector_briefing(up_df, "업종"))
+                    
+                    # 시각화
+                    fig_up = go.Figure(data=[go.Bar(
+                        x=up_df.head(15)['이름'], y=up_df.head(15)['등락률'],
+                        marker_color=['#FF4B4B' if x > 0 else '#1C83E1' for x in up_df.head(15)['등락률']]
+                    )])
+                    fig_up.update_layout(title="주요 업종별 상위 15 순위", template="plotly_dark", height=400)
+                    st.plotly_chart(fig_up, use_container_width=True)
+                    st.dataframe(up_df, use_container_width=True)
+                else: st.error("업종 데이터를 불러올 수 없습니다.")
+
+        with tab2:
+            with st.spinner("테마별 실시간 데이터를 수집 중..."):
+                th_df = get_naver_market_data("theme")
+                if not th_df.empty:
+                    st.markdown(generate_live_sector_briefing(th_df, "테마"))
+                    
+                    # 시각화
+                    fig_th = go.Figure(data=[go.Bar(
+                        x=th_df.head(15)['이름'], y=th_df.head(15)['등락률'],
+                        marker_color=['#FF4B4B' if x > 0 else '#1C83E1' for x in th_df.head(15)['등락률']]
+                    )])
+                    fig_th.update_layout(title="실시간 핫 테마 TOP 15", template="plotly_dark", height=400)
+                    st.plotly_chart(fig_th, use_container_width=True)
+                    st.dataframe(th_df, use_container_width=True)
+                else: st.error("테마 데이터를 불러올 수 없습니다.")
+                
 # 🌟 [신규 메뉴 추가] 자금 흐름 네트워크 맵
 elif menu == "자금 흐름 네트워크 맵":
     st.title("시총 상위 자금 흐름 네트워크")
