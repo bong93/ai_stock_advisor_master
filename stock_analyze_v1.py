@@ -55,6 +55,55 @@ class SwingBinaryMasterGRU(nn.Module):
         c = torch.sum(w * out, dim=1)
         return self.fc(c)
 
+def generate_unified_market_briefing(up_df, th_df):
+    if up_df.empty or th_df.empty:
+        return "데이터가 부족하여 종합 브리핑을 생성할 수 없습니다."
+
+    # 평균치 계산
+    up_avg = up_df['등락률'].mean()
+    th_avg = th_df['등락률'].mean()
+
+    # 상/하위 데이터 추출
+    top_up = up_df.iloc[0]
+    bot_up = up_df.iloc[-1]
+    top_th = th_df.iloc[0]
+
+    # 🌟 AI 시장 상태 판별 로직 (업종과 테마의 상관관계 분석)
+    if up_avg > 0.3 and th_avg > 0.3:
+        status, icon = "전방위 강세장 (Risk-On)", "🔥"
+        desc = "업종의 큰 돈(기관/외인)과 테마의 빠른 돈(개인)이 모두 상승을 가리키고 있습니다. 주도주 중심의 적극적인 비중 확대가 유효합니다."
+    elif up_avg < -0.3 and th_avg < -0.3:
+        status, icon = "전방위 약세장 (Risk-Off)", "❄️"
+        desc = "거시적(업종) 하방 압력과 투심(테마) 악화가 겹쳤습니다. 현금 비중을 높이고 하락 방어력이 좋은 대형주 위주로 짧게 대응하십시오."
+    elif up_avg > 0 and th_avg <= 0:
+        status, icon = "실적/대형주 주도장", "🏢"
+        desc = "테마성 투기 자금은 빠지고 있으나, 굵직한 업종 사이클은 버티고 있습니다. 펀더멘털이 튼튼한 우량주 중심의 시장입니다."
+    else: 
+        status, icon = "테마/개별주 장세 (순환매)", "🎯"
+        desc = "시장 전체의 지수(업종)는 부진하나, 특정 테마로 돈이 쏠리고 있습니다. 지수보다는 이슈 중심의 트레이딩(단타/스윙)이 유리합니다."
+
+    briefing = f"""
+<div style="background-color: #1E1E2E; padding: 20px; border-radius: 10px; margin-bottom: 20px; border-left: 5px solid #FF4B4B;">
+<h3 style="margin-top: 0;">🧠 AI 머니플로우 종합 피드백</h3>
+현재 시장은 <strong>{icon} {status}</strong> 구간입니다. <br><span style="color: #A0A0B0; font-size: 14px;">{desc}</span>
+
+<hr style="border-color: #333;">
+
+<h4 style="margin-bottom: 10px;">📊 1. 시장 온도 비교 (업종 vs 테마)</h4>
+<ul style="margin-bottom: 15px;">
+    <li><strong>업종 평균 (큰 파도):</strong> <span style="color: {'#FF4B4B' if up_avg > 0 else '#1C83E1'}; font-weight: bold;">{up_avg:+.2f}%</span> (현재 주도: <strong>{top_up['이름']}</strong> <code>{top_up['등락률']:+.2f}%</code>)</li>
+    <li><strong>테마 평균 (빠른 물결):</strong> <span style="color: {'#FF4B4B' if th_avg > 0 else '#1C83E1'}; font-weight: bold;">{th_avg:+.2f}%</span> (현재 주도: <strong>{top_th['이름']}</strong> <code>{top_th['등락률']:+.2f}%</code>)</li>
+</ul>
+
+<h4 style="margin-bottom: 10px;">💡 2. 트레이딩 전략 인사이트</h4>
+<ul style="margin-bottom: 0;">
+    <li><strong>🎯 롱(Long) 전략:</strong> 남들보다 가장 강한 사이클을 그리는 <strong>[{top_up['이름']}]</strong> 업종 내에서, 수급이 폭발하고 있는 <strong>[{top_th['이름']}]</strong> 관련주가 겹친다면 그 종목이 오늘의 최우선 매수 타점입니다.</li>
+    <li><strong>⚠️ 숏(Short) 회피:</strong> <strong>[{bot_up['이름']}]</strong> 업종은 현재 자금 이탈이 가장 심각합니다. (<code>{bot_up['등락률']:+.2f}%</code>). 해당 섹터의 매매는 당분간 보류하십시오.</li>
+</ul>
+</div>
+"""
+    return briefing
+
 # --- 2. 뉴스 감성 분석 (FinBERT) 엔진 ---
 @st.cache_resource
 def load_finbert_model():
@@ -69,44 +118,129 @@ def load_finbert_model():
 fin_tokenizer, fin_model = load_finbert_model()
 
 # --- [신규/수정] 네이버 금융 직접 크롤링 엔진 ---
-@st.cache_data(ttl=1800) # 30분마다 갱신
-def get_naver_market_data(group_type="upjong"):
+@st.cache_data(ttl=1800)
+def get_naver_market_data(group_type="upjong", count=50):
     """
-    네이버 금융에서 업종(upjong) 또는 테마(theme) 리스트를 직접 크롤링합니다.
-    야후 파이낸스 404 에러를 원천 차단합니다.
+    업종/테마별 상세 페이지를 정밀 파싱하여 
+    최고 상승률(1등)과 최저 상승률(꼴등)을 동시에 찾습니다.
     """
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36'}
-    url = f"https://finance.naver.com/sise/sise_group.naver?type={group_type}"
     
-    try:
-        res = requests.get(url, headers=headers, timeout=10)
-        res.encoding = 'euc-kr' # 네이버 금융 전용 인코딩
-        soup = BeautifulSoup(res.text, 'html.parser')
+    data = []
+    page = 1
+    seen_codes = set() # 🌟 중복 검사용 저장소
+    
+    # 1. 리스트 수집
+    while True:
+        if group_type == "upjong":
+            list_url = "https://finance.naver.com/sise/sise_group.naver?type=upjong"
+        else:
+            list_url = f"https://finance.naver.com/sise/theme.naver?page={page}"
         
-        data = []
-        table = soup.select_one('table.type_1')
-        if not table: return pd.DataFrame()
+        try:
+            res = requests.get(list_url, headers=headers, timeout=10)
+            res.encoding = 'euc-kr'
+            soup = BeautifulSoup(res.text, 'html.parser')
+            
+            table = soup.select_one('table.type_1')
+            if not table: break
 
-        rows = table.select('tr')
-        for row in rows:
-            cols = row.select('td')
-            if len(cols) >= 2:
-                link_tag = cols[0].find('a')
-                if link_tag:
-                    name = link_tag.text.strip()
-                    code = link_tag['href'].split('no=')[-1]
-                    change_text = cols[1].text.strip().replace('%', '').replace('+', '')
-                    try:
-                        change_val = float(change_text)
-                    except: change_val = 0.0
-                    
-                    data.append({"이름": name, "코드": code, "등락률": change_val})
+            rows = table.select('tr')
+            page_item_count = 0
+            is_duplicate_page = False # 🌟 중복 페이지 탈출 플래그
+            
+            for row in rows:
+                cols = row.select('td')
+                if len(cols) >= 2:
+                    link_tag = cols[0].find('a')
+                    if link_tag and 'no=' in link_tag.get('href', ''):
+                        code = link_tag['href'].split('no=')[-1].split('&')[0] 
+                        
+                        # 🌟 이미 수집한 코드라면, 마지막 페이지를 넘어서 중복 페이지를 돌고 있는 것!
+                        if code in seen_codes:
+                            is_duplicate_page = True
+                            break
+                            
+                        seen_codes.add(code) # 새로운 코드는 저장소에 등록
+                        
+                        name = link_tag.text.strip()
+                        change_text = cols[1].text.strip().replace('%', '').replace('+', '')
+                        try: change_val = float(change_text)
+                        except: change_val = 0.0
+                        
+                        data.append({"이름": name, "등락률": change_val, "code": code})
+                        page_item_count += 1
+            
+            # 업종이거나, 데이터가 없거나, 중복 페이지가 감지되면 즉시 루프 탈출
+            if group_type == "upjong" or page_item_count == 0 or is_duplicate_page:
+                break
+                
+            if page > 15: # 혹시 모를 록인(Lock-in) 방지
+                break
+                
+            page += 1
+            
+        except Exception as e:
+            break
+
+    full_df = pd.DataFrame(data).sort_values("등락률", ascending=False).reset_index(drop=True)
+    
+    # 2. 상세 페이지 크롤링
+    final_list = []
+    for i in range(min(count, len(full_df))):
+        row = full_df.iloc[i]
+        detail_url = f"https://finance.naver.com/sise/sise_group_detail.naver?type={group_type}&no={row['code']}"
         
-        df = pd.DataFrame(data)
-        return df.sort_values("등락률", ascending=False).reset_index(drop=True)
-    except Exception as e:
-        st.error(f"데이터 수집 중 오류: {e}")
-        return pd.DataFrame()
+        try:
+            d_res = requests.get(detail_url, headers=headers, timeout=5)
+            d_res.encoding = 'euc-kr'
+            d_soup = BeautifulSoup(d_res.text, 'html.parser')
+            
+            stock_table = d_soup.select_one('table.type_5')
+            max_change, min_change = -999.0, 999.0
+            top_name, bottom_name = "-", "-"
+            
+            target_td_idx = 3 if group_type == "upjong" else 4
+            
+            if stock_table:
+                stock_rows = stock_table.select('tr')
+                for s_row in stock_rows:
+                    name_cell = s_row.select_one('td.name a')
+                    tds = s_row.select('td')
+                    
+                    if name_cell and len(tds) > target_td_idx:
+                        s_name = name_cell.text.strip()
+                        change_text = tds[target_td_idx].text.strip().replace('%', '').replace('+', '').replace(',', '')
+                        if not change_text: continue 
+                        
+                        try:
+                            s_change = float(change_text)
+                            if s_change > max_change:
+                                max_change = s_change
+                                top_name = s_name
+                            if s_change < min_change:
+                                min_change = s_change
+                                bottom_name = s_name
+                        except:
+                            continue
+                            
+            if max_change == -999.0: max_change = 0.0
+            if min_change == 999.0: min_change = 0.0
+                
+            final_list.append({
+                "이름": row['이름'],
+                "등락률": row['등락률'],
+                "1등주(대장)": top_name,
+                "1등 수익률": max_change,
+                "꼴등주(부진)": bottom_name,
+                "꼴등 수익률": min_change
+            })
+            
+        except Exception:
+            continue
+
+    detail_df = pd.DataFrame(final_list)
+    return full_df, detail_df
     
 def generate_live_sector_briefing(df, g_type="업종"):
     if df.empty: return "현재 분석 가능한 데이터가 없습니다."
@@ -115,17 +249,39 @@ def generate_live_sector_briefing(df, g_type="업종"):
     bottom = df.iloc[-1]
     avg_change = df['등락률'].mean()
     
-    status = "🔥 강세" if avg_change > 0.5 else ("❄️ 약세" if avg_change < -0.5 else "☁️ 혼조세")
+    # 시장 온도 상태 판별
+    if avg_change > 0.5:
+        status_icon, status_text = "🔥", "강세 (불장)"
+        status_desc = "대부분의 산업에 돈이 유입되고 있는 활기찬 상태입니다. 적극적인 종목 발굴이 유리합니다."
+    elif avg_change < -0.5:
+        status_icon, status_text = "❄️", "약세 (냉장고)"
+        status_desc = "시장 전체의 엔진이 식어가는 중입니다. 무리한 매수보다는 현금 비중을 늘리고 관망할 때입니다."
+    else:
+        status_icon, status_text = "☁️", "혼조세 (안개)"
+        status_desc = "오르는 곳과 내리는 곳이 팽팽합니다. 방향성이 정해질 때까지 방망이를 짧게 잡아야 합니다."
     
     briefing = f"### 🚀 실시간 {g_type} 수급 브리핑\n\n"
-    briefing += f"현재 시장의 {g_type} 기류는 평균 **{avg_change:+.2f}%** 변동하며 **{status}**를 기록 중입니다.\n\n"
-    briefing += f"1. **🏆 주도 섹터:** **[{top['이름']}]**이(가) **{top['등락률']:+.2f}%**로 시장의 자금을 강력하게 흡수하고 있습니다.\n"
-    briefing += f"2. **⚠️ 하락 섹터:** **[{bottom['이름']}]** 섹터는 **{bottom['등락률']:+.2f}%**로 가장 부진한 흐름을 보입니다.\n\n"
+    briefing += f"현재 시장의 {g_type} 기류는 평균 **{avg_change:+.2f}%** 변동하며 **{status_icon} {status_text}**를 기록 중입니다.\n\n"
     
+    # 상세 분석 카드 (HTML/Markdown 활용)
+    briefing += f"""
+---
+#### 🌡️ 시황 온도계: "이 수치는 어떤 의미인가요?"
+* **평균 변동률 ({avg_change:+.2f}%):** {status_desc}
+* **주도 섹터 ({top['이름']}):** 남들보다 **{top['등락률'] - avg_change:+.2f}%p** 더 강한 에너지를 보입니다. 현재 시장의 '주인공'입니다.
+* **하락 섹터 ({bottom['이름']}):** 시장의 하락세보다 훨씬 더 깊게 눌리고 있습니다. 자금이 빠르게 이탈 중인 '위험지역'입니다.
+
+#### 💡 주린이를 위한 투자 가이드
+1. **상대적 강세에 주목:** 전체 평균({avg_change:+.2f}%)보다 높은 수익률을 기록 중인 섹터는 하락장에서도 누군가 계속 사고 있다는 증거입니다.
+2. **엇박자 주의:** 평균은 마이너스인데 혼자 폭등하는 섹터는 '테마성 급등'일 확률이 높으니 추격 매수에 주의하세요.
+3. **바닥 확인:** 하락 섹터가 며칠째 최하위라면, 투매가 끝나고 반등이 나올 '눌림목' 후보가 될 수 있습니다.
+---
+"""
+    # 기존 특이사항 로직 유지
     if "조선" in top['이름'] or "운수장비" in top['이름']:
-        briefing += "> 💡 **특이사항:** 조선/중공업 사이클에 강한 수급이 포착되었습니다. 대형 수주 뉴스나 환율 효과를 점검하십시오.\n"
+        briefing += "\n> 🔔 **특이사항:** 조선/중공업 사이클에 강한 수급이 포착되었습니다. 대형 수주 뉴스나 환율 효과를 점검하십시오."
     elif "건설" in top['이름']:
-        briefing += "> 💡 **특이사항:** 건설/인프라 섹터에 온기가 돌고 있습니다. 정책 변화나 금리 동향이 반영되었을 가능성이 높습니다.\n"
+        briefing += "\n> 🔔 **특이사항:** 건설/인프라 섹터에 온기가 돌고 있습니다. 정책 변화나 금리 동향이 반영되었을 가능성이 높습니다."
         
     return briefing
 
@@ -251,44 +407,6 @@ def get_naver_supply_demand_history(code, pages=4):
                     except: pass
         except: continue
     return pd.DataFrame(records).set_index('Date').sort_index() if records else pd.DataFrame()
-
-# --- [신규 기능] 섹터 주도주 데이터 분석 엔진 ---
-@st.cache_data(ttl=3600)
-def get_sector_performance():
-    """KRX 주요 업종 지수를 분석하여 섹터별 수익률을 반환합니다."""
-    # 분석할 주요 섹터 지수 딕셔너리 (fdr 지수 코드 기반)
-    sectors = {
-        "반도체": "KS001", "IT가전": "KS002", "조선": "KS012", "건설": "KS013", 
-        "운수장비": "KS014", "철강": "KS015", "화학": "KS016", "비철금속": "KS017",
-        "에너지": "KS018", "바이오": "KS019", "은행": "KS021", "증권": "KS022", 
-        "보험": "KS023", "음식료": "KS025", "유통": "KS026"
-    }
-    
-    sector_results = []
-    end_date = datetime.now().strftime('%Y-%m-%d')
-    start_date = (datetime.now() - timedelta(days=40)).strftime('%Y-%m-%d')
-    
-    for name, code in sectors.items():
-        try:
-            # KRX 업종 지수 데이터 (KRX 종목코드가 아닌 업종 지수 코드로 조회 시 fdr.DataReader 활용)
-            df = fdr.DataReader(code, start_date, end_date)
-            if len(df) < 20: continue
-            
-            curr = df['Close'].iloc[-1]
-            prev_1d = df['Close'].iloc[-2]
-            prev_5d = df['Close'].iloc[-6]
-            prev_20d = df['Close'].iloc[-21] if len(df) >= 21 else df['Close'].iloc[0]
-            
-            sector_results.append({
-                "섹터명": name,
-                "현재지수": round(curr, 2),
-                "1일(%)": round(((curr - prev_1d) / prev_1d) * 100, 2),
-                "5일(%)": round(((curr - prev_5d) / prev_5d) * 100, 2),
-                "20일(%)": round(((curr - prev_20d) / prev_20d) * 100, 2)
-            })
-        except: continue
-        
-    return pd.DataFrame(sector_results)
 
 def prepare_master_features(ticker, df_chart, macro_df):
     if len(df_chart) < 60: return pd.DataFrame(), None, 0, 0, None
@@ -661,39 +779,62 @@ elif menu == "섹터 주도주 레이더":
         st.title("섹터 & 테마 머니플로우")
         st.info("시장의 큰 파도(업종)와 빠른 물결(테마)을 동시에 분석하여 자금의 종착지를 찾습니다.")
         
-        tab1, tab2 = st.tabs(["업종별 사이클 (Industry)", "테마별 수급 (Theme)"])
+        # 🌟 1. 탭을 그리기 전에 데이터를 먼저 한 번에 수집합니다.
+        with st.spinner("업종 및 테마 전수조사 및 AI 데이터 분석 중 (약 10~15초 소요)..."):
+            full_up, detail_up = get_naver_market_data("upjong", 84)
+            full_th, detail_th = get_naver_market_data("theme", 264)
         
-        with tab1:
-            with st.spinner("업종별 실시간 데이터를 수집 중..."):
-                up_df = get_naver_market_data("upjong")
-                if not up_df.empty:
-                    st.markdown(generate_live_sector_briefing(up_df, "업종"))
+        # 🌟 2. 설명 바로 밑에 '종합 피드백'을 크게 띄워줍니다.
+        if not full_up.empty and not full_th.empty:
+            st.markdown(generate_unified_market_briefing(full_up, full_th), unsafe_allow_html=True)
+                
+            tab1, tab2 = st.tabs(["업종별 사이클 (Industry)", "테마별 수급 (Theme)"])
+        
+            with tab1:
+                with st.spinner("업종별 실시간 데이터를 수집 중..."):
+                    # 🌟 수정포인트 1: 두 개의 변수로 나누어 받습니다.
+                    full_up, detail_up = get_naver_market_data("upjong", 79)
+                
+                    if not full_up.empty and not detail_up.empty:
+                        # 🌟 수정포인트 2: 브리핑에는 전체 통계(full_up)를 넣습니다.
+                        st.markdown(generate_live_sector_briefing(full_up, "업종"))       
                     
-                    # 시각화
-                    fig_up = go.Figure(data=[go.Bar(
-                        x=up_df.head(15)['이름'], y=up_df.head(15)['등락률'],
-                        marker_color=['#FF4B4B' if x > 0 else '#1C83E1' for x in up_df.head(15)['등락률']]
-                    )])
-                    fig_up.update_layout(title="주요 업종별 상위 15 순위", template="plotly_dark", height=400)
-                    st.plotly_chart(fig_up, use_container_width=True)
-                    st.dataframe(up_df, use_container_width=True)
-                else: st.error("업종 데이터를 불러올 수 없습니다.")
+                        # 🌟 수정포인트 3: 표에는 1등/꼴등이 매핑된 상세 데이터(detail_up)를 출력합니다.
+                        st.dataframe(
+                            detail_up.style.format({
+                                "등락률": "{:+.2f}%", 
+                                "1등 수익률": "{:+.2f}%", 
+                                "꼴등 수익률": "{:+.2f}%"
+                            }).applymap(
+                                lambda x: 'color: #FF4B4B; font-weight: bold' if x > 0 else ('color: #1C83E1' if x < 0 else 'color: gray'), 
+                                subset=["등락률", "1등 수익률", "꼴등 수익률"]
+                            ),
+                            use_container_width=True
+                        )
+                    else: st.error("업종 데이터를 불러올 수 없습니다.")
 
-        with tab2:
-            with st.spinner("테마별 실시간 데이터를 수집 중..."):
-                th_df = get_naver_market_data("theme")
-                if not th_df.empty:
-                    st.markdown(generate_live_sector_briefing(th_df, "테마"))
+            with tab2:
+                with st.spinner("테마별 실시간 데이터를 전수조사 중입니다. (최초 1회 약 10~20초 소요)..."):
+                    # 🌟 수정포인트 1: 두 개의 변수로 나누어 받습니다.
+                    full_th, detail_th = get_naver_market_data("theme", 264)
+                
+                    if not full_th.empty and not detail_th.empty:
+                        # 🌟 수정포인트 2: 브리핑에는 전체 통계(full_th)를 넣습니다.
+                        st.markdown(generate_live_sector_briefing(full_th, "테마"))
                     
-                    # 시각화
-                    fig_th = go.Figure(data=[go.Bar(
-                        x=th_df.head(15)['이름'], y=th_df.head(15)['등락률'],
-                        marker_color=['#FF4B4B' if x > 0 else '#1C83E1' for x in th_df.head(15)['등락률']]
-                    )])
-                    fig_th.update_layout(title="실시간 핫 테마 TOP 15", template="plotly_dark", height=400)
-                    st.plotly_chart(fig_th, use_container_width=True)
-                    st.dataframe(th_df, use_container_width=True)
-                else: st.error("테마 데이터를 불러올 수 없습니다.")
+                        # 🌟 수정포인트 3: 표에는 1등/꼴등이 매핑된 상세 데이터(detail_th)를 출력합니다.
+                        st.dataframe(
+                            detail_th.style.format({
+                                "등락률": "{:+.2f}%", 
+                                "1등 수익률": "{:+.2f}%", 
+                                "꼴등 수익률": "{:+.2f}%"
+                            }).applymap(
+                                lambda x: 'color: #FF4B4B; font-weight: bold' if x > 0 else ('color: #1C83E1' if x < 0 else 'color: gray'), 
+                                subset=["등락률", "1등 수익률", "꼴등 수익률"]
+                            ),
+                            use_container_width=True
+                        )
+                    else: st.error("테마 데이터를 불러올 수 없습니다.")
                 
 # 🌟 [신규 메뉴 추가] 자금 흐름 네트워크 맵
 elif menu == "자금 흐름 네트워크 맵":
