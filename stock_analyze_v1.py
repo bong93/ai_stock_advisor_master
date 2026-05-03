@@ -318,8 +318,8 @@ def draw_ichimoku_chart(df_plot):
 
 # --- 4. 메인 실행부 ---
 # 🚨 모델 파일 두 개가 같은 폴더에 있어야 합니다.
-GRU_PATH = r"D:\KOSPI_KOSDAK_DAYTRAIDER_AI_PRJ\model_output\weather_advisor_v6_master_D.pt"
-LGB_PATH = r"D:\KOSPI_KOSDAK_DAYTRAIDER_AI_PRJ\model_output\weather_advisor_v6_master_D_lgb.pkl"
+GRU_PATH = r"weather_advisor_v6_master_D.pt"
+LGB_PATH = r"weather_advisor_v6_master_D_lgb.pkl"
 
 model_gru, model_lgb, device = load_ensemble_models(GRU_PATH, LGB_PATH)
 
