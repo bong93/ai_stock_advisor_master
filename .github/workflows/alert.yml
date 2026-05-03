@@ -56,4 +56,4 @@ jobs:
       if: github.event_name == 'workflow_dispatch'
       env:
         DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-      run: python discord_alert.py --mode ${{ inputs.mode }}
+      run: python discord_bot.py --mode ${{ inputs.mode }}
