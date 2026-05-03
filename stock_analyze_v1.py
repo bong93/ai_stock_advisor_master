@@ -317,7 +317,6 @@ def draw_ichimoku_chart(df_plot):
     fig.update_layout(height=500, template="plotly_dark", xaxis_rangeslider_visible=False, xaxis=dict(type='date', range=[df_plot.index[-146], df_plot.index[-1]]), margin=dict(l=10, r=10, t=30, b=10))
     return fig
 
-# 🌟 [신규 기능 1] 자금 흐름 네트워크 맵 그리기
 def draw_correlation_network(market="KOSPI", top_n=30):
     try:
         df_list = fdr.StockListing(market)
@@ -325,7 +324,6 @@ def draw_correlation_network(market="KOSPI", top_n=30):
         names = df_list.sort_values('Marcap', ascending=False).head(top_n)['Name'].tolist()
         t_map = dict(zip(tickers, names))
         
-        # 최근 60일 데이터 수집 및 일일 수익률 계산
         end_date = datetime.now()
         start_date = end_date - timedelta(days=90)
         df_prices = pd.DataFrame()
@@ -342,41 +340,56 @@ def draw_correlation_network(market="KOSPI", top_n=30):
         df_prices.dropna(inplace=True)
         corr_matrix = df_prices.corr()
         
-        # 네트워크 그래프 생성 (상관계수 0.5 이상 또는 -0.5 이하만 연결)
         G = nx.Graph()
+        # 🌟 개선 1: 임계값을 0.7로 높여 확실한 연결만 남김
+        THRESHOLD = 0.7 
+        
         for i in range(len(corr_matrix.columns)):
             for j in range(i+1, len(corr_matrix.columns)):
                 corr = corr_matrix.iloc[i, j]
-                if abs(corr) >= 0.5:
+                if abs(corr) >= THRESHOLD:
                     G.add_edge(corr_matrix.columns[i], corr_matrix.columns[j], weight=corr)
                     
-        # 노드 레이아웃 설정
-        pos = nx.spring_layout(G, k=0.5, seed=42)
+        # 🌟 개선 2: 반발력(k)을 높여 노드 간 간격을 넓힘 (복잡도 감소)
+        pos = nx.spring_layout(G, k=1.2, seed=42) 
         
-        edge_x, edge_y, edge_colors = [], [], []
+        edge_x, edge_y = [], []
         for edge in G.edges(data=True):
             x0, y0 = pos[edge[0]]
             x1, y1 = pos[edge[1]]
             edge_x.extend([x0, x1, None])
             edge_y.extend([y0, y1, None])
-            # 양의 상관관계는 빨간색(동조화), 음의 상관관계는 파란색(디커플링)
-            edge_colors.append('rgba(255,50,50,0.5)' if edge[2]['weight'] > 0 else 'rgba(50,50,255,0.5)')
             
-        edge_trace = go.Scatter(x=edge_x, y=edge_y, line=dict(width=1, color='#888'), hoverinfo='none', mode='lines')
+        # 🌟 개선 3: 선의 투명도를 조절하여 배경처럼 처리
+        edge_trace = go.Scatter(x=edge_x, y=edge_y, 
+                                line=dict(width=0.5, color='rgba(136, 136, 136, 0.4)'), 
+                                hoverinfo='none', mode='lines')
         
-        node_x, node_y, text_labels = [], [], []
+        node_x, node_y, text_labels, node_size = [], [], [], []
         for node in G.nodes():
             x, y = pos[node]
-            node_x.append(x); node_y.append(y); text_labels.append(node)
+            node_x.append(x)
+            node_y.append(y)
+            text_labels.append(node)
+            # 🌟 개선 4: 연결된 선이 많을수록(주도주일수록) 구슬 크기를 키움
+            node_size.append(15 + (G.degree(node) * 3)) 
             
         node_trace = go.Scatter(
-            x=node_x, y=node_y, mode='markers+text', text=text_labels, textposition="top center",
-            hoverinfo='text', marker=dict(showscale=True, colorscale='YlGnBu', size=20,
-            color=[G.degree(n) for n in G.nodes()], line_width=2))
+            x=node_x, y=node_y, mode='markers+text', text=text_labels, 
+            textposition="bottom center", # 텍스트 위치 하단 고정
+            hoverinfo='text', 
+            marker=dict(
+                showscale=True, 
+                colorscale='Viridis', 
+                size=node_size,
+                color=[G.degree(n) for n in G.nodes()], 
+                line_width=2,
+                colorbar=dict(title="연결 강도", thickness=15)
+            ))
             
         fig = go.Figure(data=[edge_trace, node_trace],
              layout=go.Layout(
-                title=dict(text=f'🕸️ {market} 시총 상위 {top_n} 자금 흐름 동조화 네트워크 (최근 60일)', font=dict(size=16)),
+                title=dict(text=f'🕸️ {market} 핵심 테마 동조화 맵 (상관계수 {THRESHOLD} 이상)', font=dict(size=16)),
                 showlegend=False, hovermode='closest',
                 margin=dict(b=20,l=5,r=5,t=40),
                 xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
