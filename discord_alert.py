@@ -182,7 +182,10 @@ def run_scanner(mode="morning"):
     results = []
     macro_df = load_macro_feature_data()
     
-    for ticker in tickers:
+    for i, ticker in enumerate(tickers):
+        if (i + 1) % 10 == 0:
+            print(f"🔄 분석 진행 중... [{i + 1} / 100] 완료", flush=True)
+            
         try:
             df = fdr.DataReader(ticker, (datetime.now() - pd.Timedelta(days=150)).strftime('%Y-%m-%d'))
             
