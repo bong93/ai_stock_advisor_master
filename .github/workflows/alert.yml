@@ -39,7 +39,7 @@ jobs:
         python -m pip install --upgrade pip
         # requirements.txt가 있으면 설치하고, 없어도 아래 필수 라이브러리로 무조건 실행되게 안전장치 추가
         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-        pip install requests pandas numpy torch scikit-learn pytz ta FinanceDataReader beautifulsoup4 lxml lightgbm joblib
+        pip install requests pandas numpy torch scikit-learn pytz ta finance-datareader beautifulsoup4 lxml lightgbm joblib
 
     - name: 🌅 [자동] 장 시작 전 브리핑 실행 (08:45)
       if: github.event.schedule == '45 23 * * 0-4'
