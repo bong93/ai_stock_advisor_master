@@ -10,17 +10,21 @@ from bs4 import BeautifulSoup
 import requests
 import ta
 from sklearn.preprocessing import RobustScaler
+from pykrx import stock
+import joblib
+import lightgbm as lgb
 import time
 import os
 import warnings
 
 # 🌟 최상단 배치 (Streamlit 설정)
-st.set_page_config(page_title="AI Quant Radar V6", layout="wide")
+st.set_page_config(page_title="AI Quant Radar V6 Ensemble", layout="wide")
 warnings.filterwarnings('ignore', category=FutureWarning)
+warnings.filterwarnings("ignore", message="X does not have valid feature names")
 
-# --- 1. V6 마스터 AI 모델 구조 ---
+# --- 1. V6 앙상블 마스터 AI 모델 구조 (24 Features) ---
 class SwingBinaryMasterGRU(nn.Module):
-    def __init__(self, input_size=19, hidden_size=128, num_layers=2):
+    def __init__(self, input_size=24, hidden_size=128, num_layers=2):
         super(SwingBinaryMasterGRU, self).__init__()
         self.gru = nn.GRU(input_size, hidden_size, num_layers, batch_first=True, dropout=0.5)
         self.attention = nn.Linear(hidden_size, 1)
@@ -31,7 +35,7 @@ class SwingBinaryMasterGRU(nn.Module):
         c = torch.sum(w * out, dim=1)
         return self.fc(c)
 
-# --- 2. 보안 접속 (Enter 키 대응) ---
+# --- 2. 보안 접속 ---
 def check_password():
     def password_entered():
         if st.session_state["password"] == "dlghdud121!":
@@ -56,16 +60,20 @@ def check_password():
 
 # --- 3. 데이터 및 분석 엔진 ---
 @st.cache_resource
-def load_trained_model(path):
+def load_ensemble_models(gru_path, lgb_path):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = SwingBinaryMasterGRU(input_size=19)
+    model_gru = SwingBinaryMasterGRU(input_size=24)
     try:
-        if not os.path.exists(path): return None, device
-        state_dict = torch.load(path, map_location=device, weights_only=True)
-        model.load_state_dict(state_dict)
-        model.to(device).eval()
-        return model, device
-    except: return None, device
+        if not os.path.exists(gru_path) or not os.path.exists(lgb_path): 
+            return None, None, device
+        # GRU 로드
+        state_dict = torch.load(gru_path, map_location=device, weights_only=True)
+        model_gru.load_state_dict(state_dict)
+        model_gru.to(device).eval()
+        # LGBM 로드
+        model_lgb = joblib.load(lgb_path)
+        return model_gru, model_lgb, device
+    except: return None, None, device
 
 @st.cache_data(ttl=3600)
 def get_macro_dashboard_data():
@@ -85,33 +93,63 @@ def load_macro_feature_data():
     start_dt = (datetime.today() - timedelta(days=500)).strftime('%Y-%m-%d')
     usdkrw = fdr.DataReader('USD/KRW', start_dt, end_dt)['Close'].rename('usd_krw')
     nasdaq = fdr.DataReader('IXIC', start_dt, end_dt)['Close'].rename('nasdaq')
-    macro_df = pd.concat([usdkrw, nasdaq], axis=1).ffill().dropna()
+    kospi = fdr.DataReader('KS11', start_dt, end_dt)['Close'].rename('kospi')
+    kosdaq = fdr.DataReader('KQ11', start_dt, end_dt)['Close'].rename('kosdaq')
+    vix = fdr.DataReader('VIX', start_dt, end_dt)['Close'].rename('vix')
+    
+    macro_df = pd.concat([usdkrw, nasdaq, kospi, kosdaq, vix], axis=1).ffill().dropna()
     macro_df['usd_krw_ret'] = macro_df['usd_krw'].pct_change()
     macro_df['nasdaq_ret'] = macro_df['nasdaq'].pct_change()
-    return macro_df[['usd_krw_ret', 'nasdaq_ret']]
+    macro_df['kospi_ret'] = macro_df['kospi'].pct_change()
+    macro_df['kosdaq_ret'] = macro_df['kosdaq'].pct_change()
+    macro_df['vix_ret'] = macro_df['vix'].pct_change()
+    return macro_df[['usd_krw_ret', 'nasdaq_ret', 'kospi_ret', 'kosdaq_ret', 'vix_ret']]
 
-def get_naver_supply_demand(code):
-    try:
-        url = f"https://finance.naver.com/item/frgn.naver?code={code}"
-        res = requests.get(url, headers={'User-agent': 'Mozilla/5.0'}, timeout=5)
-        soup = BeautifulSoup(res.text, 'html.parser')
-        tables = soup.find_all('table', class_='type2')
-        if not tables or len(tables) < 2: return 0, 0, None
-        rows = tables[1].find_all('tr')
-        for row in rows:
-            cols = row.find_all('td')
-            if len(cols) >= 9 and cols[0].text.strip(): 
-                inst_str = cols[5].text.strip().replace(',', '')
-                for_str = cols[6].text.strip().replace(',', '')
-                return int(inst_str), int(for_str), cols[0].text.strip()
-        return 0, 0, None
-    except: return 0, 0, None
+def get_naver_supply_demand_history(code, pages=4):
+    records = []
+    for p in range(1, pages + 1):
+        try:
+            url = f"https://finance.naver.com/item/frgn.naver?code={code}&page={p}"
+            res = requests.get(url, headers={'User-agent': 'Mozilla/5.0'}, timeout=5)
+            soup = BeautifulSoup(res.text, 'html.parser')
+            tables = soup.find_all('table', class_='type2')
+            if len(tables) < 2: continue
+            
+            rows = tables[1].find_all('tr')
+            for row in rows:
+                cols = row.find_all('td')
+                if len(cols) >= 9 and cols[0].text.strip():
+                    date_str = cols[0].text.strip().replace('.', '-')
+                    inst_str = cols[5].text.strip().replace(',', '').replace('+', '')
+                    for_str = cols[6].text.strip().replace(',', '').replace('+', '')
+                    try:
+                        records.append({
+                            'Date': pd.to_datetime(date_str),
+                            'inst_net': int(inst_str),
+                            'foreigner_net': int(for_str)
+                        })
+                    except: pass
+        except: continue
+        
+    if records:
+        return pd.DataFrame(records).set_index('Date').sort_index()
+    return pd.DataFrame()
 
 def prepare_master_features(ticker, df_chart, macro_df):
     if len(df_chart) < 60: return pd.DataFrame(), None, 0, 0, None
-    df = df_chart.copy().join(macro_df, how='left').ffill().bfill()
     
-    # [1] 일목균형표 기초 지표 계산 (현재 시점 기준)
+    # 🔥 Pykrx 대신 네이버 80일치 데이터를 가져와 실시간 수급까지 한 번에 해결!
+    sd_df = get_naver_supply_demand_history(ticker, pages=4)
+    
+    df = df_chart.copy().join(macro_df, how='left')
+    if not sd_df.empty: 
+        df = df.join(sd_df, how='left')
+    else: 
+        df['inst_net'] = 0; df['foreigner_net'] = 0
+        
+    df.ffill(inplace=True); df.bfill(inplace=True)
+
+    # [일목균형표 기초 지표 계산]
     high_9 = df['High'].rolling(9).max()
     low_9 = df['Low'].rolling(9).min()
     tenkan = (high_9 + low_9) / 2
@@ -120,20 +158,15 @@ def prepare_master_features(ticker, df_chart, macro_df):
     low_26 = df['Low'].rolling(26).min()
     kijun = (high_26 + low_26) / 2
     
-    # 선행스팬 원본 값 (아직 shift 안 함)
     span_a_raw = (tenkan + kijun) / 2
     high_52 = df['High'].rolling(52).max()
     low_52 = df['Low'].rolling(52).min()
     span_b_raw = (high_52 + low_52) / 2
 
-    # 🌟 [미래 확장] 도화지 26거래일 추가
     last_date = df.index[-1]
-    # 주말을 제외한 영업일(B) 기준으로 생성해야 차트에 공백이 안 생깁니다.
     future_dates = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=26, freq='B')
     df_plot = pd.concat([df, pd.DataFrame(index=future_dates)])
 
-    # 🌟 [핵심 해결 로직] Pandas의 데이터 증발 방지
-    # Series를 df_plot(미래 공간 포함) 크기로 먼저 맞춘 뒤 shift를 해야 빈칸으로 온전히 밀려납니다.
     tmp_span_a = pd.Series(index=df_plot.index, dtype=float)
     tmp_span_a.loc[df.index] = span_a_raw
     df_plot['senkou_span_a'] = tmp_span_a.shift(26)
@@ -142,11 +175,10 @@ def prepare_master_features(ticker, df_chart, macro_df):
     tmp_span_b.loc[df.index] = span_b_raw
     df_plot['senkou_span_b'] = tmp_span_b.shift(26)
 
-    # 전환선, 기준선은 오늘까지만 표기
     df_plot['tenkan_sen'] = tenkan
     df_plot['kijun_sen'] = kijun
 
-    # [19개 피처 추출] AI 모델용 (미래 데이터 섞임 방지를 위해 원본 df 사용)
+    # [24개 피처 추출]
     close, high, low, vol = df['Close'], df['High'], df['Low'], df['Volume']
     feats = pd.DataFrame(index=df.index)
     feats['ret'] = close.pct_change()
@@ -165,14 +197,36 @@ def prepare_master_features(ticker, df_chart, macro_df):
     feats['cmf'] = ta.volume.ChaikinMoneyFlowIndicator(high, low, close, vol).chaikin_money_flow()
     feats['will_r'] = ta.momentum.WilliamsRIndicator(high, low, close).williams_r() / -100.0
     
-    inst_net, for_net, valid_date = get_naver_supply_demand(ticker)
-    feats['inst_ratio'] = 0.0; feats['foreigner_ratio'] = 0.0 
-    last_idx = feats.index[-1]; last_vol = vol.iloc[-1] + 1e-8
-    feats.loc[last_idx, 'inst_ratio'] = inst_net / last_vol
-    feats.loc[last_idx, 'foreigner_ratio'] = for_net / last_vol
-    feats['usd_krw_ret'] = df['usd_krw_ret']; feats['nasdaq_ret'] = df['nasdaq_ret']
+    # 🔥 실시간 데이터가 반영된 '완벽한 수급 비율 & 5일 누적' 계산
+    feats['inst_ratio'] = df['inst_net'] / (vol + 1e-8)
+    feats['foreigner_ratio'] = df['foreigner_net'] / (vol + 1e-8)
+    feats['inst_ratio_5d'] = df['inst_net'].rolling(window=5).sum() / (vol.rolling(window=5).sum() + 1e-8)
+    feats['foreigner_ratio_5d'] = df['foreigner_net'].rolling(window=5).sum() / (vol.rolling(window=5).sum() + 1e-8)
     
-    return feats.dropna(), valid_date, inst_net/last_vol, for_net/last_vol, df_plot
+    feats['usd_krw_ret'] = df['usd_krw_ret']
+    feats['nasdaq_ret'] = df['nasdaq_ret']
+    feats['kospi_ret'] = df['kospi_ret']
+    feats['kosdaq_ret'] = df['kosdaq_ret']
+    feats['vix_ret'] = df['vix_ret']
+    
+    feats.replace([np.inf, -np.inf], np.nan, inplace=True)
+    feats.dropna(inplace=True)
+    
+    # V6 앙상블 모델 전용 24개 피처 순서
+    feature_cols = [
+        'ret', 'dist_ma', 'macd_hist', 'adx', 'rsi', 'stoch', 'bb_pband', 'atr_pct', 'obv_ret', 'mfi', 
+        'bb_width', 'cci', 'roc', 'cmf', 'will_r', 'inst_ratio', 'foreigner_ratio', 'inst_ratio_5d', 'foreigner_ratio_5d',
+        'usd_krw_ret', 'nasdaq_ret', 'kospi_ret', 'kosdaq_ret', 'vix_ret'
+    ]
+    
+    if len(feats) == 0:
+        return feats, None, 0, 0, df_plot
+        
+    valid_date = df.index[-1].strftime('%Y-%m-%d')
+    last_inst_ratio = feats['inst_ratio'].iloc[-1]
+    last_for_ratio = feats['foreigner_ratio'].iloc[-1]
+    
+    return feats[feature_cols], valid_date, last_inst_ratio, last_for_ratio, df_plot
 
 @st.cache_data(ttl=3600)
 def get_v6_market_rankings(market_type="KOSPI", top_n=50):
@@ -186,6 +240,7 @@ def get_v6_market_rankings(market_type="KOSPI", top_n=50):
              names = df_list.sort_values('Marcap', ascending=False).head(top_n)['Name'].tolist()
         ticker_name_map = dict(zip(tickers, names))
     except: return pd.DataFrame()
+    
     results = []
     prog = st.progress(0)
     macro_df = load_macro_feature_data()
@@ -193,11 +248,18 @@ def get_v6_market_rankings(market_type="KOSPI", top_n=50):
         try:
             df_chart = fdr.DataReader(ticker, (datetime.now() - timedelta(days=200)).strftime('%Y-%m-%d'))
             feats_df, v_date, i_r, f_r, _ = prepare_master_features(ticker, df_chart, macro_df)
-            if feats_df.empty: continue
-            inp = torch.FloatTensor(RobustScaler().fit_transform(feats_df.tail(60).values)).unsqueeze(0).to(device)
+            if feats_df.empty or len(feats_df) < 60: continue
+            
+            scaled_feat = RobustScaler().fit_transform(feats_df.tail(60).values)
+            
+            # 🌟 앙상블 로직
+            inp = torch.FloatTensor(scaled_feat).unsqueeze(0).to(device)
             with torch.no_grad():
-                prob = torch.softmax(model(inp), dim=1).cpu().numpy()[0][1] * 100
-            results.append({"종목명": ticker_name_map[ticker], "코드": ticker, "상승확률": prob, "현재가": int(df_chart['Close'].iloc[-1])})
+                gru_prob = torch.softmax(model_gru(inp), dim=1).cpu().numpy()[0][1]
+            lgb_prob = model_lgb.predict_proba(scaled_feat[-1].reshape(1, -1))[0][1]
+            
+            final_prob = (gru_prob * 0.5 + lgb_prob * 0.5) * 100
+            results.append({"종목명": ticker_name_map[ticker], "코드": ticker, "상승확률": final_prob, "현재가": int(df_chart['Close'].iloc[-1])})
         except: continue
         prog.progress((i + 1) / len(tickers))
     prog.empty()
@@ -219,10 +281,10 @@ def generate_ai_briefing(name, buy_prob, for_ratio, inst_ratio, rsi, stoch, vali
     date_str = f"({valid_date} 장마감 기준)" if valid_date else "(수급 정보 없음)"
     briefing = f"**[{name} AI 트레이딩 브리핑]** {date_str}\n\n"
     
-    if buy_prob >= 75: briefing += f"🎯 **초고도 확신 구간 ({buy_prob:.1f}%):** AI가 강력한 단기 상승을 예고합니다. "
-    elif buy_prob >= 60: briefing += f"👍 **매수 우위 구간 ({buy_prob:.1f}%):** 상승 에너지가 긍정적입니다. "
-    elif buy_prob >= 40: briefing += f"☁️ **관망 구간 ({buy_prob:.1f}%):** 뚜렷한 방향성이 없습니다. "
-    else: briefing += f"🛑 **하락 위험 구간 ({buy_prob:.1f}%):** 하방 압력이 강합니다. "
+    if buy_prob >= 70: briefing += f"🔥 **[S급] 초고도 확신 구간 ({buy_prob:.1f}%):** 승률 85% 이상의 완벽한 상승 추세입니다. "
+    elif buy_prob >= 60: briefing += f"🚀 **[A급] 강한 확신 구간 ({buy_prob:.1f}%):** 상승 에너지가 긍정적인 매수 추천 자리입니다. "
+    elif buy_prob >= 50: briefing += f"✅ **[B급] 관망 권장 구간 ({buy_prob:.1f}%):** 반반의 확률을 가진 애매한 구간입니다. "
+    else: briefing += f"🛑 **[패스] 하락 위험 구간 ({buy_prob:.1f}%):** 하방 압력이 강합니다. "
 
     if for_ratio > 0.001 and inst_ratio > 0.001: briefing += "특히 외국인과 기관의 쌍끌이 매수가 유입되며 상승 추세를 뒷받침하고 있습니다.\n\n"
     elif for_ratio > 0.001: briefing += "외국인 자금이 유입되며 하방을 방어하고 있습니다.\n\n"
@@ -237,24 +299,16 @@ def generate_ai_briefing(name, buy_prob, for_ratio, inst_ratio, rsi, stoch, vali
     
     return briefing
 
-# 🌟 [수정] 차트 드로잉 (X축 범위 및 선 속성)
 def draw_ichimoku_chart(df_plot):
     fig = go.Figure()
-    
-    # 1. 구름대 (선행스팬) - 미래 인덱스까지 선이 있음
     fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot['senkou_span_a'], line=dict(width=0), showlegend=False))
     fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot['senkou_span_b'], line=dict(width=0), 
                              fill='tonexty', fillcolor='rgba(150, 150, 150, 0.2)', name='Kumo Cloud'))
-    
-    # 2. 캔들차트 (현재까지만 그림)
     fig.add_trace(go.Candlestick(x=df_plot.index, open=df_plot['Open'], high=df_plot['High'], 
                                  low=df_plot['Low'], close=df_plot['Close'], name='Price'))
-    
-    # 3. 전환선/기준선
     fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot['tenkan_sen'], line=dict(color='orange', width=1), name='전환선'))
     fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot['kijun_sen'], line=dict(color='dodgerblue', width=1), name='기준선'))
 
-    # 🌟 [X축 강제 확장] 마지막 날짜(오늘+26일)까지 범위를 수동으로 잡습니다.
     fig.update_layout(
         height=500, template="plotly_dark", xaxis_rangeslider_visible=False,
         xaxis=dict(type='date', range=[df_plot.index[-146], df_plot.index[-1]]),
@@ -263,9 +317,11 @@ def draw_ichimoku_chart(df_plot):
     return fig
 
 # --- 4. 메인 실행부 ---
-# 🚨 대표님 환경에 맞는 모델 경로 유지
-MODEL_PATH = r"weather_advisor_v6_master_D.pt"
-model, device = load_trained_model(MODEL_PATH)
+# 🚨 모델 파일 두 개가 같은 폴더에 있어야 합니다.
+GRU_PATH = r"D:\KOSPI_KOSDAK_DAYTRAIDER_AI_PRJ\model_output\weather_advisor_v6_master_D.pt"
+LGB_PATH = r"D:\KOSPI_KOSDAK_DAYTRAIDER_AI_PRJ\model_output\weather_advisor_v6_master_D_lgb.pkl"
+
+model_gru, model_lgb, device = load_ensemble_models(GRU_PATH, LGB_PATH)
 
 if check_password():
     idx_data = get_macro_dashboard_data()
@@ -286,8 +342,8 @@ if menu == "🔍 단일 종목 X-Ray":
 
     if match.empty:
         st.error(f"❌ '{target_input}' 종목을 찾을 수 없습니다.")
-    elif model is None:
-        st.error(f"❌ AI 모델 로드 실패.")
+    elif model_gru is None or model_lgb is None:
+        st.error(f"❌ AI 모델 로드 실패. 파일 경로를 확인하세요.")
     else:
         ticker, name = match['Code'].iloc[0], match['Name'].iloc[0]
         
@@ -297,18 +353,22 @@ if menu == "🔍 단일 종목 X-Ray":
                 macro_df = load_macro_feature_data()
                 feats_df, v_date, i_r, f_r, df_plot = prepare_master_features(ticker, df_chart, macro_df)
                 
-                if not feats_df.empty:
-                    # 🌟 [수정] 시세 메트릭 추가 (현재가, 등락폭)
+                if not feats_df.empty and len(feats_df) >= 60:
                     curr_p = df_chart['Close'].iloc[-1]
                     prev_p = df_chart['Close'].iloc[-2]
                     st.metric(label=f"{name} ({ticker})", value=f"{int(curr_p):,}원", delta=f"{int(curr_p-prev_p):+}원 ({(curr_p-prev_p)/prev_p*100:+.2f}%)")
 
-                    # AI 판단 브리핑
-                    inp = torch.FloatTensor(RobustScaler().fit_transform(feats_df.tail(60).values)).unsqueeze(0).to(device)
-                    with torch.no_grad():
-                        prob = torch.softmax(model(inp), dim=1).cpu().numpy()[0][1] * 100
+                    # 🌟 앙상블 AI 판단
+                    scaled_feat = RobustScaler().fit_transform(feats_df.tail(60).values)
+                    inp = torch.FloatTensor(scaled_feat).unsqueeze(0).to(device)
                     
-                    st.info(generate_ai_briefing(name, prob, f_r, i_r, feats_df['rsi'].iloc[-1], feats_df['stoch'].iloc[-1], v_date))
+                    with torch.no_grad():
+                        gru_prob = torch.softmax(model_gru(inp), dim=1).cpu().numpy()[0][1]
+                    lgb_prob = model_lgb.predict_proba(scaled_feat[-1].reshape(1, -1))[0][1]
+                    
+                    final_prob = (gru_prob * 0.5) + (lgb_prob * 0.5)
+                    
+                    st.info(generate_ai_briefing(name, final_prob * 100, f_r, i_r, feats_df['rsi'].iloc[-1], feats_df['stoch'].iloc[-1], v_date))
                     st.markdown("---")
 
                     col1, col2 = st.columns([2, 1])
@@ -316,17 +376,25 @@ if menu == "🔍 단일 종목 X-Ray":
                         st.plotly_chart(draw_ichimoku_chart(df_plot), use_container_width=True)
                     
                     with col2:
-                        st.subheader("🤖 AI 타점 분석")
-                        st.metric("상승 확률", f"{prob:.1f}%")
+                        # 🌟 앙상블 3구도 UI 패널
+                        st.subheader("🤖 V6 앙상블 분석")
+                        cA, cB, cC = st.columns(3)
+                        cA.metric("GRU", f"{gru_prob*100:.1f}%")
+                        cB.metric("LGBM", f"{lgb_prob*100:.1f}%")
+                        cC.metric("최종", f"{final_prob*100:.1f}%")
+                        
+                        st.markdown("---")
                         st.write(f"📊 **실시간 수급 (비중)**")
                         st.write(f"- 외국인: {f_r * 100:+.2f}%")
                         st.write(f"- 기  관: {i_r * 100:+.2f}%")
                         st.markdown("---")
-                        st.write(f"🎯 **트레이딩 가이드**\n- 익절(+5%): {int(curr_p * 1.05):,}원\n- 손절(-4%): {int(curr_p * 0.96):,}원")
+                        st.write(f"🎯 **트레이딩 가이드**\n- 익절(+4%): {int(curr_p * 1.04):,}원\n- 손절(-3%): {int(curr_p * 0.97):,}원")
 
                     st.markdown("---")
                     st.subheader(f"📰 {name} 최신 뉴스")
                     for n in get_top10_news(name): st.markdown(f"• [{n['title']}]({n['link']})")
+                else:
+                    st.error("데이터가 부족하여 분석할 수 없습니다. (신규 상장 등)")
             except Exception as e:
                 st.error(f"분석 중 오류 발생: {e}")
 
@@ -351,29 +419,37 @@ elif menu == "🌐 글로벌 매크로 & ETF":
 
 elif menu == "🎯 V6 스윙 타점 스캐너":
     st.title("🎯 V6 저격수 스캐너 (Daily)")
-    st.info(f"📅 실시간 네이버 금융 수급 연동 중 (주말/휴일 완벽 대응)")
-    if model is None:
-        st.error(f"❌ AI 모델 파일을 불러오지 못했습니다. 경로를 확인해주세요: \n`{MODEL_PATH}`")
+    st.info(f"📅 pykrx 히스토리컬 수급 데이터 연동 중 (24피처 앙상블 분석)")
+    if model_gru is None or model_lgb is None:
+        st.error(f"❌ AI 모델 파일을 불러오지 못했습니다. 경로를 확인해주세요: \n`{GRU_PATH}`\n`{LGB_PATH}`")
         st.stop()
         
     m_type = st.radio("타겟 시장 선택", ["KOSDAQ", "KOSPI"], horizontal=True)
     if st.button(f"🚀 {m_type} 시총 Top 100 타점 스캔"):
-        with st.spinner("네이버 금융에서 외국인/기관 수급 데이터를 긁어오고 있습니다. 약 1~2분 소요됩니다..."):
+        with st.spinner("과거 수급 데이터와 매크로 지표를 분석 중입니다. 약 1~2분 소요됩니다..."):
             rank_df = get_v6_market_rankings(m_type, top_n=100)
             
         if rank_df.empty: st.error("⚠️ 데이터를 불러오지 못했습니다.")
         else:
             display_df = rank_df.copy()
-            sniper_df = display_df[display_df['상승확률'] >= 75.0].sort_values("상승확률", ascending=False).reset_index(drop=True)
-            display_df['상승확률'] = display_df['상승확률'].apply(lambda x: f"{x:.1f}%")
+            # 🌟 백테스트 기준에 맞춰 S급, A급 분리
+            sniper_s_df = display_df[display_df['상승확률'] >= 70.0].sort_values("상승확률", ascending=False).reset_index(drop=True)
+            sniper_a_df = display_df[(display_df['상승확률'] >= 60.0) & (display_df['상승확률'] < 70.0)].sort_values("상승확률", ascending=False).reset_index(drop=True)
+            
             st.markdown("---")
-            if not sniper_df.empty:
-                st.success(f"🎯 **[Sniper] 75% 이상 초고도 확신 매수 타점 포착 ({len(sniper_df)}건)**")
-                sniper_df['상승확률'] = sniper_df['상승확률'].apply(lambda x: f"{x:.1f}%")
-                st.dataframe(sniper_df, use_container_width=True)
+            if not sniper_s_df.empty:
+                st.success(f"🔥 **[S급] 70% 이상 초고도 확신 타점 ({len(sniper_s_df)}건)** - 승률 85% 구간")
+                sniper_s_df['상승확률'] = sniper_s_df['상승확률'].apply(lambda x: f"{x:.1f}%")
+                st.dataframe(sniper_s_df, use_container_width=True)
             else:
-                st.warning("🎯 오늘 장은 75% 이상 확신할 만한 완벽한 매수 타점이 없습니다. (관망 권장)")
+                st.warning("🔥 오늘 장은 70% 이상 확신할 만한 S급 매수 타점이 없습니다.")
+                
+            if not sniper_a_df.empty:
+                st.info(f"🚀 **[A급] 60% 이상 매수 우위 타점 ({len(sniper_a_df)}건)** - 승률 60% 구간")
+                sniper_a_df['상승확률'] = sniper_a_df['상승확률'].apply(lambda x: f"{x:.1f}%")
+                st.dataframe(sniper_a_df, use_container_width=True)
                 
             st.markdown("---")
-            st.write("📋 전체 스캔 결과 (참고용)")
+            st.write("📋 전체 스캔 결과 (B급 이하 포함)")
+            display_df['상승확률'] = display_df['상승확률'].apply(lambda x: f"{x:.1f}%")
             st.dataframe(display_df.sort_values("상승확률", ascending=False).reset_index(drop=True), use_container_width=True)
