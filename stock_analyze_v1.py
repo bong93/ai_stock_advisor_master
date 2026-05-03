@@ -781,7 +781,7 @@ elif menu == "섹터 주도주 레이더":
         
         # 🌟 1. 탭을 그리기 전에 데이터를 먼저 한 번에 수집합니다.
         with st.spinner("업종 및 테마 전수조사 및 AI 데이터 분석 중 (약 10~15초 소요)..."):
-            full_up, detail_up = get_naver_market_data("upjong", 84)
+            full_up, detail_up = get_naver_market_data("upjong", 79)
             full_th, detail_th = get_naver_market_data("theme", 264)
         
         # 🌟 2. 설명 바로 밑에 '종합 피드백'을 크게 띄워줍니다.
