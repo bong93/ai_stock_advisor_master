@@ -21,7 +21,7 @@ from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import networkx as nx
 
 # 🌟 최상단 배치 (Streamlit 설정)
-st.set_page_config(page_title="AI Quant Radar V7.0", layout="wide")
+st.set_page_config(page_title="AI Quant Master", layout="wide")
 warnings.filterwarnings('ignore', category=FutureWarning)
 warnings.filterwarnings("ignore", message="X does not have valid feature names")
 
@@ -97,7 +97,7 @@ def generate_unified_market_briefing(up_df, th_df):
 
 <h4 style="margin-bottom: 10px;">💡 2. 트레이딩 전략 인사이트</h4>
 <ul style="margin-bottom: 0;">
-    <li><strong>🎯 롱(Long) 전략:</strong> 남들보다 가장 강한 사이클을 그리는 <strong>[{top_up['이름']}]</strong> 업종 내에서, 수급이 폭발하고 있는 <strong>[{top_th['이름']}]</strong> 관련주가 겹친다면 그 종목이 오늘의 최우선 매수 타점입니다.</li>
+    <li><strong>🎯 롱(Long) 전략: 현재 시장의 큰 자금은 [{top_up['이름']}] 업종으로, 빠른 단기 자금은 [{top_th['이름']}] 테마로 쏠리고 있습니다. 우량주 스윙을 원하신다면 업종 대장주를, 단기 변동성을 노리신다면 테마 대장주 중 AI 타점이 높은 종목을 분리하여 공략하십시오.
     <li><strong>⚠️ 숏(Short) 회피:</strong> <strong>[{bot_up['이름']}]</strong> 업종은 현재 자금 이탈이 가장 심각합니다. (<code>{bot_up['등락률']:+.2f}%</code>). 해당 섹터의 매매는 당분간 보류하십시오.</li>
 </ul>
 </div>
@@ -117,6 +117,28 @@ def load_finbert_model():
 
 fin_tokenizer, fin_model = load_finbert_model()
 
+@st.cache_data(ttl=3600*24)
+def get_stock_tags_mapping():
+    """KRX 종목 상세 정보를 이용해 업종과 테마(주요제품) 꼬리표를 생성합니다."""
+    try:
+        df_desc = fdr.StockListing('KRX-DESC')
+        mapping = {}
+        for _, row in df_desc.iterrows():
+            sector = str(row.get('Sector', '')).strip()
+            industry = str(row.get('Industry', '')).strip()
+            
+            if sector == 'nan' or not sector: sector = "분류없음"
+            if industry == 'nan' or not industry: industry = "특징없음"
+            
+            # 너무 긴 테마(Industry) 텍스트는 가독성을 위해 자름
+            if len(industry) > 15:
+                industry = industry[:15] + "..."
+                
+            mapping[row['Code']] = f"🏢 {sector} | 🏷️ {industry}"
+        return mapping
+    except:
+        return {}
+    
 # --- [신규/수정] 네이버 금융 직접 크롤링 엔진 ---
 @st.cache_data(ttl=1800)
 def get_naver_market_data(group_type="upjong", count=50):
@@ -466,6 +488,8 @@ def get_v6_market_rankings(market_type="KOSPI", top_n=50):
     results = []
     prog = st.progress(0)
     macro_df = load_macro_feature_data()
+    tag_map = get_stock_tags_mapping() # 🌟 꼬리표 매핑 데이터 로드
+    
     for i, ticker in enumerate(tickers):
         try:
             df_chart = fdr.DataReader(ticker, (datetime.now() - timedelta(days=200)).strftime('%Y-%m-%d'))
@@ -479,10 +503,11 @@ def get_v6_market_rankings(market_type="KOSPI", top_n=50):
             base_prob = (gru_prob * 0.5 + lgb_prob * 0.5) * 100
             
             t_name = ticker_name_map[ticker]
+            tag_info = tag_map.get(ticker, "🏢 분류없음 | 🏷️ -") # 🌟 해당 종목의 꼬리표 추출
             news_score, _ = (0.0, []) if market_type == "ETF/KR" else get_news_sentiment_details(t_name, display=15)
             final_prob = max(0.0, min(100.0, base_prob + (news_score * 5.0)))
             
-            results.append({"종목명": t_name, "코드": ticker, "현재가": int(df_chart['Close'].iloc[-1]), "기본확률(AI)": base_prob, "뉴스점수": news_score, "최종확률": final_prob})
+            results.append({"종목명": t_name, "코드": ticker,"업종/테마 태그": tag_info, "현재가": int(df_chart['Close'].iloc[-1]), "기본확률(AI)": base_prob, "뉴스점수": news_score, "최종확률": final_prob})
         except: continue
         prog.progress((i + 1) / len(tickers))
     prog.empty()
@@ -984,7 +1009,9 @@ elif menu == "스윙 타점 스캐너":
         if rank_df.empty: st.error("⚠️ 데이터를 불러오지 못했습니다.")
         else:
             display_df = rank_df.copy()
-            format_df = display_df.copy()
+            cols_order = ['종목명', '코드', '업종/테마 태그', '현재가', '기본확률(AI)', '뉴스점수', '최종확률']
+            format_df = display_df[cols_order]
+            
             format_df['기본확률(AI)'] = format_df['기본확률(AI)'].apply(lambda x: f"{x:.1f}%")
             format_df['뉴스점수'] = format_df['뉴스점수'].apply(lambda x: f"{x:+.2f}점")
             format_df['최종확률'] = format_df['최종확률'].apply(lambda x: f"{x:.1f}%")
@@ -993,8 +1020,18 @@ elif menu == "스윙 타점 스캐너":
             sniper_a_df = format_df[(display_df['최종확률'] >= 60.0) & (display_df['최종확률'] < 70.0)].sort_values(by=display_df['최종확률'].name, ascending=False).reset_index(drop=True)
             
             st.markdown("---")
+            # 🌟 [보너스] AI 바텀업 주도 섹터 자동 추출 로직
+            from collections import Counter
+            high_prob_df = pd.concat([sniper_s_df, sniper_a_df])
+            if not high_prob_df.empty:
+                sectors = [tag.split('|')[0].replace('🏢', '').strip() for tag in high_prob_df['업종/테마 태그'] if '분류없음' not in tag]
+                if sectors:
+                    top_sector = Counter(sectors).most_common(1)[0][0]
+                    st.error(f"🧠 **[AI 바텀업 분석]** 오늘 S급/A급 타점이 가장 많이 포착된 시장의 숨은 주도 업종은 **[{top_sector}]** 입니다!")
+                    
+            st.markdown("---")
             if not sniper_s_df.empty:
-                st.success(f"🔥 **[S급] 70% 이상 초고도 확신 타점 ({len(sniper_s_df)}건)**")
+                st.error(f"🔥 **[S급] 70% 이상 초고도 확신 타점 ({len(sniper_s_df)}건)**")
                 st.dataframe(sniper_s_df, use_container_width=True)
             else: st.warning("🔥 오늘 장은 70% 이상 확신할 만한 S급 매수 타점이 없습니다.")
                 
