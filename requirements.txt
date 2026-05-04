@@ -11,3 +11,6 @@ scikit-learn
 finance-datareader
 lightgbm
 transformers
+pytz
+lxml
+joblib
