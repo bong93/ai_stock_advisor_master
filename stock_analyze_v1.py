@@ -824,9 +824,16 @@ if check_password():
                         sentiment_score, news_items = 0.0, [] 
                         etf_brands = ['KODEX', 'TIGER', 'KBSTAR', 'ACE', 'ARIRANG', 'KOSEF', 'HANARO', 'SOL']
                         
-                        # 종목명에 위 ETF 브랜드가 포함되어 있지 않을 때만 뉴스를 긁어옵니다.
-                        if not any(brand in name for brand in etf_brands):
-                            sentiment_score, news_items = get_news_sentiment_details(name, display=100)
+                        # 2차 방어: ETF가 아니고, 코드가 무조건 숫자 6자리로만 되어있을 때만 뉴스를 검색합니다. (0147Z0 같은 특수코드는 스킵)
+                        if not is_etf and ticker.isdigit():
+                            try:
+                                result = get_news_sentiment_details(name, display=100)
+                                if result and len(result) == 2:
+                                    sentiment_score, news_items = result
+                            except Exception as e:
+                                print(f"뉴스 수집 중 예외 발생 (무시함): {e}")
+                                sentiment_score = 0.0
+                                news_items = []
                                 
                         news_impact = sentiment_score * 5.0
                         final_prob_pct = max(0.0, min(100.0, base_prob_pct + news_impact))
