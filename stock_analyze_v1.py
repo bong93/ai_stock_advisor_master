@@ -726,13 +726,13 @@ def get_market_signal_lamp(macro_df):
     return lamp_results
     
 # --- 5. 메인 실행부 ---
-GRU_PATH = r"D:\KOSPI_KOSDAK_DAYTRAIDER_AI_PRJ\model_output\weather_advisor_v6_master_D.pt"
-LGB_PATH = r"D:\KOSPI_KOSDAK_DAYTRAIDER_AI_PRJ\model_output\weather_advisor_v6_master_D_lgb.pkl"
-RESULT_CSV = r"D:\KOSPI_KOSDAK_DAYTRAIDER_AI_PRJ\model_output\morning_scan_result.csv" # 🌟 사전 분석 결과 파일명
+GRU_PATH = r"weather_advisor_v6_master_D.pt"
+LGB_PATH = r"weather_advisor_v6_master_D_lgb.pkl"
+RESULT_CSV = r"morning_scan_result.csv" # 🌟 사전 분석 결과 파일명
 # 🌟 [추가] 섹터, 테마, ETF CSV 파일 경로
-SECTOR_UP_CSV = r"D:\KOSPI_KOSDAK_DAYTRAIDER_AI_PRJ\model_output\sector_upjong.csv"
-SECTOR_TH_CSV = r"D:\KOSPI_KOSDAK_DAYTRAIDER_AI_PRJ\model_output\sector_theme.csv"
-ETF_CSV = r"D:\KOSPI_KOSDAK_DAYTRAIDER_AI_PRJ\model_output\etf_scanner_result.csv"
+SECTOR_UP_CSV = r"sector_upjong.csv"
+SECTOR_TH_CSV = r"sector_theme.csv"
+ETF_CSV = r"etf_scanner_result.csv"
 
 model_gru, model_lgb, device = load_ensemble_models(GRU_PATH, LGB_PATH)
 
