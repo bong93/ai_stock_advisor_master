@@ -785,6 +785,7 @@ if check_password():
             
             with st.spinner(f"[{name}] 데이터 분석 중..."):
                 try:
+                    news_items = []
                     # 🌟 [수정포인트 1] 데이터 수집 기간 연장 (월봉 출력을 위해 1000일(약 3년)치 데이터 수집)
                     df_chart = fdr.DataReader(ticker, (datetime.now() - timedelta(days=1000)).strftime('%Y-%m-%d'))
                     macro_df = load_macro_feature_data()
