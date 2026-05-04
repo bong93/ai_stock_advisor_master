@@ -820,7 +820,14 @@ if check_password():
                         lgb_prob = model_lgb.predict_proba(scaled_feat[-1].reshape(1, -1))[0][1]
                         base_prob_pct = ((gru_prob * 0.5) + (lgb_prob * 0.5)) * 100
                         
-                        sentiment_score, news_items = get_news_sentiment_details(name, display=100)
+                        # 🌟 [ETF 에러 해결 핵심] 변수 안전 초기화 및 ETF 뉴스 검색 스킵
+                        sentiment_score, news_items = 0.0, [] 
+                        etf_brands = ['KODEX', 'TIGER', 'KBSTAR', 'ACE', 'ARIRANG', 'KOSEF', 'HANARO', 'SOL']
+                        
+                        # 종목명에 위 ETF 브랜드가 포함되어 있지 않을 때만 뉴스를 긁어옵니다.
+                        if not any(brand in name for brand in etf_brands):
+                            sentiment_score, news_items = get_news_sentiment_details(name, display=100)
+                            
                         news_impact = sentiment_score * 5.0
                         final_prob_pct = max(0.0, min(100.0, base_prob_pct + news_impact))
                         
