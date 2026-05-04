@@ -2,7 +2,7 @@ name: AI Quant V6 Discord Bot
 
 on:
   schedule:
-    - cron: '45 23 * * 0-4' # KST 08:45 AM (월~금)
+    - cron: '25 23 * * 0-4' # KST 08:25 AM (월~금)
     - cron: '0 7 * * 1-5'   # KST 16:00 PM (월~금)
   
   # 🚀 수동 실행 버튼
@@ -44,8 +44,8 @@ jobs:
         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
         pip install requests pandas numpy torch scikit-learn pytz ta finance-datareader beautifulsoup4 lxml lightgbm joblib
 
-    - name: 🌅 [자동] 장 시작 전 브리핑 실행 (08:45)
-      if: github.event.schedule == '45 23 * * 0-4'
+    - name: 🌅 [자동] 장 시작 전 브리핑 실행 (08:25)
+      if: github.event.schedule == '25 23 * * 0-4'
       env:
         DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
       run: python discord_alert.py --mode morning
