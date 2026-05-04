@@ -124,7 +124,7 @@ def generate_unified_market_briefing(up_df, th_df):
 
 <h4 style="margin-bottom: 10px;">💡 2. 트레이딩 전략 인사이트</h4>
 <ul style="margin-bottom: 0;">
-    <li><strong>🎯 롱(Long) 전략: 현재 시장의 큰 자금은 [{top_up['이름']}] 업종으로, 빠른 단기 자금은 [{top_th['이름']}] 테마로 쏠리고 있습니다. 우량주 스윙을 원하신다면 업종 대장주를, 단기 변동성을 노리신다면 테마 대장주 중 AI 타점이 높은 종목을 분리하여 공략하십시오.
+    <li><strong>🎯 롱(Long) 전략:</strong> 현재 시장의 큰 자금은 [{top_up['이름']}] 업종으로, 빠른 단기 자금은 [{top_th['이름']}] 테마로 쏠리고 있습니다. 우량주 스윙을 원하신다면 업종 대장주를, 단기 변동성을 노리신다면 테마 대장주 중 AI 타점이 높은 종목을 분리하여 공략하십시오.</li>
     <li><strong>⚠️ 숏(Short) 회피:</strong> <strong>[{bot_up['이름']}]</strong> 업종은 현재 자금 이탈이 가장 심각합니다. (<code>{bot_up['등락률']:+.2f}%</code>). 해당 섹터의 매매는 당분간 보류하십시오.</li>
 </ul>
 </div>
@@ -697,233 +697,278 @@ def draw_correlation_network(market="KOSPI", top_n=30):
     except Exception as e:
         st.error(f"네트워크 맵 생성 중 오류: {e}")
         return go.Figure()
+
+def get_market_signal_lamp(macro_df):
+    """KOSPI, KOSDAQ 지수를 종목처럼 분석하여 시장의 온도를 측정합니다."""
+    indices = {"KOSPI": "KS11", "KOSDAQ": "KQ11"}
+    lamp_results = {}
+    
+    for name, ticker in indices.items():
+        try:
+            df_idx = fdr.DataReader(ticker, (datetime.now() - timedelta(days=200)).strftime('%Y-%m-%d'))
+            # 지수 데이터는 수급(sd_df)이 종목과 형식이 다르므로 수급 없이 매크로만으로 분석
+            feats_df, _, _, _, _ = prepare_master_features(ticker, df_idx, macro_df)
+            if feats_df.empty: continue
+            
+            scaled_feat = RobustScaler().fit_transform(feats_df.tail(60).values)
+            inp = torch.FloatTensor(scaled_feat).unsqueeze(0).to(device)
+            with torch.no_grad(): gru_prob = torch.softmax(model_gru(inp), dim=1).cpu().numpy()[0][1]
+            lgb_prob = model_lgb.predict_proba(scaled_feat[-1].reshape(1, -1))[0][1]
+            prob = ((gru_prob * 0.5) + (lgb_prob * 0.5)) * 100
+            
+            # 확률에 따른 상태 지정
+            if prob >= 60: status, color, icon = "매수 우위", "#FF4B4B", "☀️"
+            elif prob <= 40: status, color, icon = "하락 경계", "#1C83E1", "🌧️"
+            else: status, color, icon = "중립/관망", "#AAAAAA", "☁️"
+            
+            lamp_results[name] = {"prob": prob, "status": status, "color": color, "icon": icon}
+        except: continue
+    return lamp_results
     
 # --- 5. 메인 실행부 ---
-GRU_PATH = r"weather_advisor_v6_master_D.pt"
-LGB_PATH = r"weather_advisor_v6_master_D_lgb.pkl"
+GRU_PATH = r"D:\KOSPI_KOSDAK_DAYTRAIDER_AI_PRJ\model_output\weather_advisor_v6_master_D.pt"
+LGB_PATH = r"D:\KOSPI_KOSDAK_DAYTRAIDER_AI_PRJ\model_output\weather_advisor_v6_master_D_lgb.pkl"
+RESULT_CSV = r"D:\KOSPI_KOSDAK_DAYTRAIDER_AI_PRJ\model_output\morning_scan_result.csv" # 🌟 사전 분석 결과 파일명
+# 🌟 [추가] 섹터, 테마, ETF CSV 파일 경로
+SECTOR_UP_CSV = r"D:\KOSPI_KOSDAK_DAYTRAIDER_AI_PRJ\model_output\sector_upjong.csv"
+SECTOR_TH_CSV = r"D:\KOSPI_KOSDAK_DAYTRAIDER_AI_PRJ\model_output\sector_theme.csv"
+ETF_CSV = r"D:\KOSPI_KOSDAK_DAYTRAIDER_AI_PRJ\model_output\etf_scanner_result.csv"
+
 model_gru, model_lgb, device = load_ensemble_models(GRU_PATH, LGB_PATH)
 
 if check_password():
+    menu = st.sidebar.radio("메뉴 선택", ["단일 종목 스캐너", "섹터 주도주 레이더", "스윙 타점 스캐너", "자금 흐름 네트워크 맵", "ETF 스캐너"], horizontal=True, label_visibility="collapsed")
+
+    # 1. 상단 매크로 지표 출력
     idx_data = get_macro_dashboard_data()
-    st.subheader("한국/미국 주요 지표")
-    
-    macro_helps = {
-        "USD/KRW": "원/달러 환율입니다. 오르면 외국인 자금이 빠져나갈 우려가 있습니다.",
-        "NASDAQ": "미국 기술주 중심의 나스닥 지수입니다. 한국 반도체/IT 주가에 큰 영향을 줍니다.",
-        "S&P500": "미국 500곳의 대기업이 포함된 실질적인 간판 지수로써 대표 주가 지수로 불립니다.",
-        "KOSPI": "대한민국 유가증권시장의 종합 주가 지수이며, 제 1시장입니다.",
-        "KOSDAQ": "대한민국의 벤처기업이 몰려있는 종합 주가 지수이며, 제 2시장입니다.",
-        "VIX": "미국 공포 지수입니다. 지수가 급등하면 미국 시장의 불안정성을 의미하며, 이는 한국 시장의 하락 및 변동성 확대로 해석됩니다."
-    }
+    st.subheader("📊 글로벌 실시간 지표")
     idx_cols = st.columns(len(idx_data))
     for i, (k, v) in enumerate(idx_data.items()):
         color = "inverse" if k in ["USD/KRW", "VIX"] else "normal"
-        idx_cols[i].metric(k, f"{v[0]:,.2f}", f"{v[1]:+.2f}%", delta_color=color, help=macro_helps.get(k, "글로벌 매크로 지표입니다."))
-    st.markdown("---") # 🌟 매크로와 메인 콘텐츠를 구분하는 선
+        idx_cols[i].metric(k, f"{v[0]:,.2f}", f"{v[1]:+.2f}%", delta_color=color)
     
-    # 🌟 메뉴에 네트워크 맵 추가
-    menu = st.sidebar.radio("모드 선택", ["단일 종목 스캐너", "섹터 주도주 레이더", "스윙 타점 스캐너", "자금 흐름 네트워크 맵", "ETF 스캐너"], horizontal=True, label_visibility="collapsed")
+    st.markdown("---")
 
-if menu == "단일 종목 스캐너":
-    st.title("단일 종목 스캐너 (AI + News + 시뮬레이터)")
+    # 🌟 2. [신규] 시장 AI 신호등 섹터 (모바일 최적화)
+    macro_df_for_lamp = load_macro_feature_data()
+    lamp_data = get_market_signal_lamp(macro_df_for_lamp)
     
-    all_stocks = get_all_stock_list()
-    default_idx = all_stocks.index("삼성전자 (005930)") if "삼성전자 (005930)" in all_stocks else 0
-    selected_item = st.sidebar.selectbox("종목 검색 (초성/이름/코드 입력)", options=all_stocks, index=default_idx)
+    if lamp_data:
+        st.subheader("🚦 AI 시장 온도계 (오늘의 방향성)")
+        l_col1, l_col2 = st.columns(2)
+        for i, (name, res) in enumerate(lamp_data.items()):
+            target_col = l_col1 if i == 0 else l_col2
+            with target_col:
+                st.markdown(f"""
+                <div style="background-color: #1E1E2E; padding: 15px; border-radius: 10px; border-top: 5px solid {res['color']}; text-align: center;">
+                    <span style="font-size: 14px; color: #AAAAAA;">{name} 예측 확률</span><br>
+                    <span style="font-size: 28px; font-weight: bold; color: {res['color']};">{res['prob']:.1f}%</span><br>
+                    <span style="font-size: 16px;">{res['icon']} {res['status']}</span>
+                </div>
+                """, unsafe_allow_html=True)
     
-    if model_gru is None or model_lgb is None: st.error(f"❌ AI 모델 로드 실패. 파일 경로를 확인하세요.")
-    else:
-        import re
-        match = re.match(r"(.*) \((.*)\)", selected_item)
-        if match: name, ticker = match.group(1), match.group(2)
-        else: name, ticker = "삼성전자", "005930"
+    st.markdown("---")
         
-        with st.spinner(f"[{name}] 데이터 분석 중..."):
-            try:
-                # 🌟 [수정포인트 1] 데이터 수집 기간 연장 (월봉 출력을 위해 1000일(약 3년)치 데이터 수집)
-                df_chart = fdr.DataReader(ticker, (datetime.now() - timedelta(days=1000)).strftime('%Y-%m-%d'))
-                macro_df = load_macro_feature_data()
-                feats_df, v_date, i_r, f_r, df_plot_daily = prepare_master_features(ticker, df_chart, macro_df)
-                
-                if not feats_df.empty and len(feats_df) >= 60:
-                    curr_p, prev_p = df_chart['Close'].iloc[-1], df_chart['Close'].iloc[-2]
-                    st.metric(label=f"{name} ({ticker})", value=f"{int(curr_p):,}원", delta=f"{int(curr_p-prev_p):+}원 ({(curr_p-prev_p)/prev_p*100:+.2f}%)")
+    if menu == "단일 종목 스캐너":
+        st.title("단일 종목 스캐너 (AI + News + 시뮬레이터)")
+        
+        all_stocks = get_all_stock_list()
+        default_idx = all_stocks.index("삼성전자 (005930)") if "삼성전자 (005930)" in all_stocks else 0
+        selected_item = st.sidebar.selectbox("종목 검색 (초성/이름/코드 입력)", options=all_stocks, index=default_idx)
+        
+        if model_gru is None or model_lgb is None: st.error(f"❌ AI 모델 로드 실패. 파일 경로를 확인하세요.")
+        else:
+            import re
+            match = re.match(r"(.*) \((.*)\)", selected_item)
+            if match: name, ticker = match.group(1), match.group(2)
+            else: name, ticker = "삼성전자", "005930"
+            
+            with st.spinner(f"[{name}] 데이터 분석 중..."):
+                try:
+                    # 🌟 [수정포인트 1] 데이터 수집 기간 연장 (월봉 출력을 위해 1000일(약 3년)치 데이터 수집)
+                    df_chart = fdr.DataReader(ticker, (datetime.now() - timedelta(days=1000)).strftime('%Y-%m-%d'))
+                    macro_df = load_macro_feature_data()
+                    feats_df, v_date, i_r, f_r, df_plot_daily = prepare_master_features(ticker, df_chart, macro_df)
                     
-                    briefing_container = st.container()
-                    
-                    with st.expander("🎛️ 매크로 스트레스 테스트 (What-If 시뮬레이터)", expanded=False):
-                        st.info("만약 오늘 밤 나스닥이 폭락하거나 환율이 치솟는다면, 이 종목의 내일 상승 확률은 어떻게 변할지 테스트해보세요.")
-                        col_s1, col_s2, col_s3 = st.columns(3)
-                        sim_nasdaq = col_s1.slider("🇺🇸 나스닥 변동 (%)", -5.0, 5.0, 0.0, 0.5,
-                                                   help="간밤에 미국 기술주(나스닥)가 폭락하거나 폭등했을 때, 다음 날 해당 종목에 미칠 충격을 시뮬레이션합니다.")
-                        sim_usdkrw = col_s2.slider("💵 환율 변동 (%)", -3.0, 3.0, 0.0, 0.1,
-                                                   help="원/달러 환율이 급등(원화 가치 하락)하면 외국인 자금 이탈 우려가 커져 증시에 악재로 작용하는 경향이 있습니다.")
-                        sim_vix = col_s3.slider("😨 VIX 공포지수 변동 (%)", -20.0, 20.0, 0.0, 1.0,
-                                                help="시장의 공포지수입니다. VIX가 치솟으면 전 세계적인 투자 심리가 얼어붙어 증시에 강한 하방 압력을 줍니다.")
-                    
-                    # 시뮬레이션 데이터 복사 및 변동치 적용
-                    sim_feats_df = feats_df.copy()
-                    sim_feats_df.loc[sim_feats_df.index[-1], 'nasdaq_ret'] += (sim_nasdaq / 100.0)
-                    sim_feats_df.loc[sim_feats_df.index[-1], 'usd_krw_ret'] += (sim_usdkrw / 100.0)
-                    sim_feats_df.loc[sim_feats_df.index[-1], 'vix_ret'] += (sim_vix / 100.0)
+                    if not feats_df.empty and len(feats_df) >= 60:
+                        curr_p, prev_p = df_chart['Close'].iloc[-1], df_chart['Close'].iloc[-2]
+                        st.metric(label=f"{name} ({ticker})", value=f"{int(curr_p):,}원", delta=f"{int(curr_p-prev_p):+}원 ({(curr_p-prev_p)/prev_p*100:+.2f}%)")
+                        
+                        briefing_container = st.container()
+                        
+                        with st.expander("🎛️ 매크로 스트레스 테스트 (What-If 시뮬레이터)", expanded=False):
+                            st.info("만약 오늘 밤 나스닥이 폭락하거나 환율이 치솟는다면, 이 종목의 내일 상승 확률은 어떻게 변할지 테스트해보세요.")
+                            col_s1, col_s2, col_s3 = st.columns(3)
+                            sim_nasdaq = col_s1.slider("🇺🇸 나스닥 변동 (%)", -5.0, 5.0, 0.0, 0.5,
+                                                       help="간밤에 미국 기술주(나스닥)가 폭락하거나 폭등했을 때, 다음 날 해당 종목에 미칠 충격을 시뮬레이션합니다.")
+                            sim_usdkrw = col_s2.slider("💵 환율 변동 (%)", -3.0, 3.0, 0.0, 0.1,
+                                                       help="원/달러 환율이 급등(원화 가치 하락)하면 외국인 자금 이탈 우려가 커져 증시에 악재로 작용하는 경향이 있습니다.")
+                            sim_vix = col_s3.slider("😨 VIX 공포지수 변동 (%)", -20.0, 20.0, 0.0, 1.0,
+                                                    help="시장의 공포지수입니다. VIX가 치솟으면 전 세계적인 투자 심리가 얼어붙어 증시에 강한 하방 압력을 줍니다.")
+                        
+                        # 시뮬레이션 데이터 복사 및 변동치 적용
+                        sim_feats_df = feats_df.copy()
+                        sim_feats_df.loc[sim_feats_df.index[-1], 'nasdaq_ret'] += (sim_nasdaq / 100.0)
+                        sim_feats_df.loc[sim_feats_df.index[-1], 'usd_krw_ret'] += (sim_usdkrw / 100.0)
+                        sim_feats_df.loc[sim_feats_df.index[-1], 'vix_ret'] += (sim_vix / 100.0)
 
-                    # 시뮬레이션 적용된 데이터로 스케일링 및 AI 예측 (고정된 일봉 모델 사용)
-                    scaled_feat = RobustScaler().fit_transform(sim_feats_df.tail(60).values)
-                    inp = torch.FloatTensor(scaled_feat).unsqueeze(0).to(device)
-                    
-                    with torch.no_grad(): gru_prob = torch.softmax(model_gru(inp), dim=1).cpu().numpy()[0][1]
-                    lgb_prob = model_lgb.predict_proba(scaled_feat[-1].reshape(1, -1))[0][1]
-                    base_prob_pct = ((gru_prob * 0.5) + (lgb_prob * 0.5)) * 100
-                    
-                    sentiment_score, news_items = get_news_sentiment_details(name, display=100)
-                    news_impact = sentiment_score * 5.0
-                    final_prob_pct = max(0.0, min(100.0, base_prob_pct + news_impact))
-                    
-                    st.markdown("---")
-                    
-                    # 🌟 [수정포인트 2] 타임프레임 선택 라디오 버튼 (UI 배치 변경)
-                    tf_col, _ = st.columns([1, 2])
-                    with tf_col:
-                        timeframe = st.radio("📊 차트 및 AI 분석 기준 선택", ["일봉 (단기 5일)", "주봉 (중기 4주)", "월봉 (장기 3개월)"], horizontal=True)
-                    
-                    # 🌟 [수정포인트] 타임프레임 선택 및 데이터 리샘플링 로직
-                    df_chart_plot = df_plot_daily.copy()
-                    
-                    if timeframe != "일봉 (단기 5일)":
-                        # 주봉/월봉 변환
-                        rule = 'W-FRI' if timeframe == "주봉 (중기 4주)" else 'ME'
-                        df_chart_plot = df_chart.resample(rule).agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last'}).dropna()
+                        # 시뮬레이션 적용된 데이터로 스케일링 및 AI 예측 (고정된 일봉 모델 사용)
+                        scaled_feat = RobustScaler().fit_transform(sim_feats_df.tail(60).values)
+                        inp = torch.FloatTensor(scaled_feat).unsqueeze(0).to(device)
                         
-                        # 일목균형표 기본선 계산
-                        h9, l9 = df_chart_plot['High'].rolling(9).max(), df_chart_plot['Low'].rolling(9).min()
-                        h26, l26 = df_chart_plot['High'].rolling(26).max(), df_chart_plot['Low'].rolling(26).min()
-                        h52, l52 = df_chart_plot['High'].rolling(52).max(), df_chart_plot['Low'].rolling(52).min()
+                        with torch.no_grad(): gru_prob = torch.softmax(model_gru(inp), dim=1).cpu().numpy()[0][1]
+                        lgb_prob = model_lgb.predict_proba(scaled_feat[-1].reshape(1, -1))[0][1]
+                        base_prob_pct = ((gru_prob * 0.5) + (lgb_prob * 0.5)) * 100
                         
-                        tenkan_sen = (h9 + l9) / 2
-                        kijun_sen = (h26 + l26) / 2
-                        span_a_raw = (tenkan_sen + kijun_sen) / 2
-                        span_b_raw = (h52 + l52) / 2
-                        
-                        # 🌟 [핵심 해결] 미래 날짜(26칸)를 만들어 차트 꼬리에 붙여줍니다.
-                        # 주봉이면 26주, 월봉이면 26개월 치 빈 껍데기(Index)를 만듭니다.
-                        future_dates = pd.date_range(start=df_chart_plot.index[-1] + pd.Timedelta(days=1), periods=26, freq=rule)
-                        future_df = pd.DataFrame(index=future_dates)
-                        df_chart_plot = pd.concat([df_chart_plot, future_df])
-                        
-                        # 값을 넣고 26칸을 앞(미래)으로 밀어냅니다.
-                        tmp_span_a = pd.Series(index=df_chart_plot.index, dtype=float)
-                        tmp_span_a.loc[df_chart.resample(rule).last().dropna().index] = span_a_raw
-                        
-                        tmp_span_b = pd.Series(index=df_chart_plot.index, dtype=float)
-                        tmp_span_b.loc[df_chart.resample(rule).last().dropna().index] = span_b_raw
-                        
-                        df_chart_plot['tenkan_sen'] = tenkan_sen
-                        df_chart_plot['kijun_sen'] = kijun_sen
-                        df_chart_plot['senkou_span_a'] = tmp_span_a.shift(26)
-                        df_chart_plot['senkou_span_b'] = tmp_span_b.shift(26)
-                        
-                        st.caption(f"💡 **안내:** 현재 보여지는 차트는 **{timeframe}** 추세 확인용입니다. 하단의 AI 타점 확률은 최적화된 **'일봉(단기 스윙)'** 데이터를 기준으로 계산되었습니다.")
-                    
-                    # 🌟 [수정포인트 4] AI 브리핑 동적 생성 로직 (함수 대신 인라인으로 교체하여 유연성 확보)
-                    date_str = f"({v_date} 장마감 기준)" if v_date else "(수급 정보 없음)"
-                    briefing = f"[{name} {timeframe} 트레이딩 브리핑] {date_str}\n\n"
-                    briefing += f"AI 모델 및 뉴스 센티먼트를 종합한 최종 기술적 상승 확률은 **{final_prob_pct:.1f}%** 입니다.\n\n"
-
-                    if timeframe == "일봉 (단기 5일)":
-                        # 기존 일봉 백테스트 결과 유지
-                        if final_prob_pct >= 70: briefing += f"[S급] 초고도 확신 (승률 84.8%): 강력한 매수 타이밍입니다. (TP 4% 목표)\n"
-                        elif final_prob_pct >= 60: briefing += f"[A급] 강한 확신 (승률 57.7%): 단기 상승 에너지가 긍정적인 자리입니다.\n"
-                        else: briefing += f"[일반 매수] (승률 50.9%): 확률적 우위가 크지 않은 애매한 구간이므로 관망을 권장합니다.\n"
-                    
-                    elif timeframe == "주봉 (중기 4주)":
-                        # 🌟 업데이트: 20일 예측 팩트 데이터 적용
-                        if final_prob_pct >= 70: briefing += f"[S급] 중기 대세 상승 (승률 75.8%): 4주간 홀딩해도 매우 안전한 최상위 스윙 타점입니다. (TP 8% 목표)\n"
-                        elif final_prob_pct >= 60: briefing += f"[A급] 단기 대응 요망 (승률 50.0%): 중기(4주)로 끌고 가기엔 리스크가 있습니다. 5일 이내 단기 수익 실현을 권장합니다.\n"
-                        else: briefing += f"[관망]: 중기 추세의 방향성이 불확실합니다.\n"
-                        
-                    elif timeframe == "월봉 (장기 3개월)":
-                        # 🌟 업데이트: 60일 예측 팩트 데이터 적용
-                        if final_prob_pct >= 70: briefing += f"[S급] 역사적 변곡점 (승률 76.9%): 시장에 극히 드물게 나타나는 초장기 바닥/대세 상승 초입입니다! 적극적인 비중 확대를 고려하십시오. (TP 12% 목표)\n"
-                        elif final_prob_pct >= 60: briefing += f"[A급] 장기 우상향 (승률 55.9%): 거시적으로 무난한 상승장 흐름에 탑승하고 있습니다.\n"
-                        else: briefing += f"[시장 평균] (승률 58.5%): 시장 평균적인 움직임을 보이고 있습니다. 개별 종목의 펀더멘털 분석이 추가로 필요합니다.\n"
-                        
-                    briefing += "\n💡 **수급/기술적 코멘트:**\n"
-                    if f_r > 0.001 and i_r > 0.001: briefing += "현재 외국인과 기관의 쌍끌이 매수가 유입 중입니다. "
-                    elif f_r > 0.001: briefing += "외국인 자금이 유입되며 하방을 방어 중입니다. "
-                    elif i_r > 0.001: briefing += "기관의 저가 매수세가 들어오고 있습니다. "
-                    elif f_r < -0.001 and i_r < -0.001: briefing += "현재 메이저 양매도가 출회 중이므로 접근에 주의하십시오. "
-                    else: briefing += "메이저 수급의 뚜렷한 이탈이나 유입은 감지되지 않습니다. "
-
-                    rsi = feats_df['rsi'].iloc[-1]
-                    stoch = feats_df['stoch'].iloc[-1]
-                    if rsi > 0.7 or stoch > 0.8: briefing += "차트가 단기 과열권에 진입했습니다. 급등 시 추격 매수보다는 조정을 대기하세요.\n"
-                    elif rsi < 0.3 or stoch < 0.2: briefing += "단기 낙폭 과대 구간입니다. 기술적 반등을 노린 분할 매수가 유효합니다.\n"
-                    else: briefing += "기술적 지표는 안정적인 적정 구간에 위치해 있습니다.\n"
-                    
-                    if news_items:
-                        pos_news = max(news_items, key=lambda x: x['score'])
-                        neg_news = min(news_items, key=lambda x: x['score'])
-                        if pos_news['score'] >= 0.25 or neg_news['score'] <= -0.25:
-                            briefing += f"\n🗣️ **AI 이슈 요약:**\n"
-                            if pos_news['score'] >= 0.25: briefing += f"- 🔥 강력한 호재: [{pos_news['title']}]\n"
-                            if neg_news['score'] <= -0.25: briefing += f"- 🛑 주의할 악재: [{neg_news['title']}]\n"
-
-                    # 브리핑 출력
-                    briefing_html = apply_jurin_help(briefing)
-                    with briefing_container:
-                        st.markdown(f"""
-                        <div style="background-color: rgba(0, 230, 118, 0.1); padding: 20px; border-radius: 10px; border-left: 5px solid #00E676; margin-bottom: 20px; line-height: 1.6;">
-                            {briefing_html}
-                        </div>
-                        """, unsafe_allow_html=True)
-
-                    # 차트 및 점수판 출력
-                    col1, col2 = st.columns([2, 1])
-                    with col1: 
-                        st.plotly_chart(draw_ichimoku_chart(df_chart_plot), use_container_width=True)
-                    
-                    with col2:
-                        is_simulated = sim_nasdaq != 0 or sim_usdkrw != 0 or sim_vix != 0
-                        title_prefix = "🔬 [시뮬레이션 적용됨]" if is_simulated else "1차: 2 AI 앙상블"
-                        
-                        st.subheader(title_prefix)
-                        cA, cB, cC = st.columns(3)
-                        cA.metric("GRU", f"{gru_prob*100:.1f}%")
-                        cB.metric("LGBM", f"{lgb_prob*100:.1f}%")
-                        cC.metric("기본 확률", f"{base_prob_pct:.1f}%")
+                        sentiment_score, news_items = get_news_sentiment_details(name, display=100)
+                        news_impact = sentiment_score * 5.0
+                        final_prob_pct = max(0.0, min(100.0, base_prob_pct + news_impact))
                         
                         st.markdown("---")
-                        st.subheader("📰 2차: 뉴스 센티먼트 융합")
-                        cD, cE, cF = st.columns(3)
-                        news_emoji = "🔥" if sentiment_score > 0 else ("🛑" if sentiment_score < 0 else "➖")
-                        cD.metric(f"뉴스 ({news_emoji})", f"{sentiment_score:+.2f}점")
-                        cE.metric("가산점", f"{news_impact:+.1f}%p")
                         
-                        delta_str = "시뮬레이션!" if is_simulated else None
-                        cF.metric("최종 확신도", f"{final_prob_pct:.1f}%", delta=delta_str, delta_color="inverse")
+                        # 🌟 [수정포인트 2] 타임프레임 선택 라디오 버튼 (UI 배치 변경)
+                        tf_col, _ = st.columns([1, 2])
+                        with tf_col:
+                            timeframe = st.radio("📊 차트 및 AI 분석 기준 선택", ["일봉 (단기 5일)", "주봉 (중기 4주)", "월봉 (장기 3개월)"], horizontal=True)
                         
-                        st.markdown("---")
-                        st.subheader(f"🎯 {timeframe.split(' ')[0]} 매매 가이드")
+                        # 🌟 [수정포인트] 타임프레임 선택 및 데이터 리샘플링 로직
+                        df_chart_plot = df_plot_daily.copy()
                         
-                        if timeframe == "일봉 (단기 5일)":
-                            tp_rate, sl_rate = 4.0, -3.0
-                        elif timeframe == "주봉 (중기 4주)":
-                            tp_rate, sl_rate = 8.0, -5.0
-                        else: # 월봉 (장기 3개월)
-                            tp_rate, sl_rate = 12.0, -10.0
+                        if timeframe != "일봉 (단기 5일)":
+                            # 주봉/월봉 변환
+                            rule = 'W-FRI' if timeframe == "주봉 (중기 4주)" else 'ME'
+                            df_chart_plot = df_chart.resample(rule).agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last'}).dropna()
                             
-                        target_price = curr_p * (1 + (tp_rate / 100))
-                        stop_loss = curr_p * (1 + (sl_rate / 100))
+                            # 일목균형표 기본선 계산
+                            h9, l9 = df_chart_plot['High'].rolling(9).max(), df_chart_plot['Low'].rolling(9).min()
+                            h26, l26 = df_chart_plot['High'].rolling(26).max(), df_chart_plot['Low'].rolling(26).min()
+                            h52, l52 = df_chart_plot['High'].rolling(52).max(), df_chart_plot['Low'].rolling(52).min()
+                            
+                            tenkan_sen = (h9 + l9) / 2
+                            kijun_sen = (h26 + l26) / 2
+                            span_a_raw = (tenkan_sen + kijun_sen) / 2
+                            span_b_raw = (h52 + l52) / 2
+                            
+                            # 🌟 [핵심 해결] 미래 날짜(26칸)를 만들어 차트 꼬리에 붙여줍니다.
+                            # 주봉이면 26주, 월봉이면 26개월 치 빈 껍데기(Index)를 만듭니다.
+                            future_dates = pd.date_range(start=df_chart_plot.index[-1] + pd.Timedelta(days=1), periods=26, freq=rule)
+                            future_df = pd.DataFrame(index=future_dates)
+                            df_chart_plot = pd.concat([df_chart_plot, future_df])
+                            
+                            # 값을 넣고 26칸을 앞(미래)으로 밀어냅니다.
+                            tmp_span_a = pd.Series(index=df_chart_plot.index, dtype=float)
+                            tmp_span_a.loc[df_chart.resample(rule).last().dropna().index] = span_a_raw
+                            
+                            tmp_span_b = pd.Series(index=df_chart_plot.index, dtype=float)
+                            tmp_span_b.loc[df_chart.resample(rule).last().dropna().index] = span_b_raw
+                            
+                            df_chart_plot['tenkan_sen'] = tenkan_sen
+                            df_chart_plot['kijun_sen'] = kijun_sen
+                            df_chart_plot['senkou_span_a'] = tmp_span_a.shift(26)
+                            df_chart_plot['senkou_span_b'] = tmp_span_b.shift(26)
+                            
+                            st.caption(f"💡 **안내:** 현재 보여지는 차트는 **{timeframe}** 추세 확인용입니다. 하단의 AI 타점 확률은 최적화된 **'일봉(단기 스윙)'** 데이터를 기준으로 계산되었습니다.")
                         
-                        # 🌟 [수정 완료] 거대한 st.metric 대신 깔끔한 텍스트 리스트로 통일
-                        st.write(f"- 적정 매수가: `{int(curr_p):,}원`")
-                        st.write(f"- 목표가 (+{tp_rate}%): `{int(target_price):,}원`")
-                        st.write(f"- 손절가 ({sl_rate}%): `{int(stop_loss):,}원`")
-                                                
-                        st.markdown("---")
-                        st.write(f"📊 실시간 수급 (비중)")
-                        st.write(f"- 외국인: {f_r * 100:+.2f}%")
-                        st.write(f"- 기  관: {i_r * 100:+.2f}%")
+                        # 🌟 [수정포인트 4] AI 브리핑 동적 생성 로직 (함수 대신 인라인으로 교체하여 유연성 확보)
+                        date_str = f"({v_date} 장마감 기준)" if v_date else "(수급 정보 없음)"
+                        briefing = f"[{name} {timeframe} 트레이딩 브리핑] {date_str}\n\n"
+                        briefing += f"AI 모델 및 뉴스 센티먼트를 종합한 최종 기술적 상승 확률은 **{final_prob_pct:.1f}%** 입니다.\n\n"
+
+                        if timeframe == "일봉 (단기 5일)":
+                            # 기존 일봉 백테스트 결과 유지
+                            if final_prob_pct >= 70: briefing += f"[S급] 초고도 확신 (승률 84.8%): 강력한 매수 타이밍입니다. (TP 4% 목표)\n"
+                            elif final_prob_pct >= 60: briefing += f"[A급] 강한 확신 (승률 57.7%): 단기 상승 에너지가 긍정적인 자리입니다.\n"
+                            else: briefing += f"[일반 매수] (승률 50.9%): 확률적 우위가 크지 않은 애매한 구간이므로 관망을 권장합니다.\n"
+                        
+                        elif timeframe == "주봉 (중기 4주)":
+                            # 🌟 업데이트: 20일 예측 팩트 데이터 적용
+                            if final_prob_pct >= 70: briefing += f"[S급] 중기 대세 상승 (승률 75.8%): 4주간 홀딩해도 매우 안전한 최상위 스윙 타점입니다. (TP 8% 목표)\n"
+                            elif final_prob_pct >= 60: briefing += f"[A급] 단기 대응 요망 (승률 50.0%): 중기(4주)로 끌고 가기엔 리스크가 있습니다. 5일 이내 단기 수익 실현을 권장합니다.\n"
+                            else: briefing += f"[관망]: 중기 추세의 방향성이 불확실합니다.\n"
+                            
+                        elif timeframe == "월봉 (장기 3개월)":
+                            # 🌟 업데이트: 60일 예측 팩트 데이터 적용
+                            if final_prob_pct >= 70: briefing += f"[S급] 역사적 변곡점 (승률 76.9%): 시장에 극히 드물게 나타나는 초장기 바닥/대세 상승 초입입니다! 적극적인 비중 확대를 고려하십시오. (TP 12% 목표)\n"
+                            elif final_prob_pct >= 60: briefing += f"[A급] 장기 우상향 (승률 55.9%): 거시적으로 무난한 상승장 흐름에 탑승하고 있습니다.\n"
+                            else: briefing += f"[시장 평균] (승률 58.5%): 시장 평균적인 움직임을 보이고 있습니다. 개별 종목의 펀더멘털 분석이 추가로 필요합니다.\n"
+                            
+                        briefing += "\n💡 **수급/기술적 코멘트:**\n"
+                        if f_r > 0.001 and i_r > 0.001: briefing += "현재 외국인과 기관의 쌍끌이 매수가 유입 중입니다. "
+                        elif f_r > 0.001: briefing += "외국인 자금이 유입되며 하방을 방어 중입니다. "
+                        elif i_r > 0.001: briefing += "기관의 저가 매수세가 들어오고 있습니다. "
+                        elif f_r < -0.001 and i_r < -0.001: briefing += "현재 메이저 양매도가 출회 중이므로 접근에 주의하십시오. "
+                        else: briefing += "메이저 수급의 뚜렷한 이탈이나 유입은 감지되지 않습니다. "
+
+                        rsi = feats_df['rsi'].iloc[-1]
+                        stoch = feats_df['stoch'].iloc[-1]
+                        if rsi > 0.7 or stoch > 0.8: briefing += "차트가 단기 과열권에 진입했습니다. 급등 시 추격 매수보다는 조정을 대기하세요.\n"
+                        elif rsi < 0.3 or stoch < 0.2: briefing += "단기 낙폭 과대 구간입니다. 기술적 반등을 노린 분할 매수가 유효합니다.\n"
+                        else: briefing += "기술적 지표는 안정적인 적정 구간에 위치해 있습니다.\n"
+                        
+                        if news_items:
+                            pos_news = max(news_items, key=lambda x: x['score'])
+                            neg_news = min(news_items, key=lambda x: x['score'])
+                            if pos_news['score'] >= 0.25 or neg_news['score'] <= -0.25:
+                                briefing += f"\n🗣️ **AI 이슈 요약:**\n"
+                                if pos_news['score'] >= 0.25: briefing += f"- 🔥 강력한 호재: [{pos_news['title']}]\n"
+                                if neg_news['score'] <= -0.25: briefing += f"- 🛑 주의할 악재: [{neg_news['title']}]\n"
+
+                        # 브리핑 출력
+                        briefing_html = apply_jurin_help(briefing)
+                        with briefing_container:
+                            st.markdown(f"""
+                            <div style="background-color: rgba(0, 230, 118, 0.1); padding: 20px; border-radius: 10px; border-left: 5px solid #00E676; margin-bottom: 20px; line-height: 1.6;">
+                                {briefing_html}
+                            </div>
+                            """, unsafe_allow_html=True)
+
+                        # 차트 및 점수판 출력
+                        col1, col2 = st.columns([2, 1])
+                        with col1: 
+                            st.plotly_chart(draw_ichimoku_chart(df_chart_plot), use_container_width=True)
+                        
+                        with col2:
+                            is_simulated = sim_nasdaq != 0 or sim_usdkrw != 0 or sim_vix != 0
+                            title_prefix = "🔬 [시뮬레이션 적용됨]" if is_simulated else "1차: 2 AI 앙상블"
+                            
+                            st.subheader(title_prefix)
+                            cA, cB, cC = st.columns(3)
+                            cA.metric("GRU", f"{gru_prob*100:.1f}%")
+                            cB.metric("LGBM", f"{lgb_prob*100:.1f}%")
+                            cC.metric("기본 확률", f"{base_prob_pct:.1f}%")
+                            
+                            st.markdown("---")
+                            st.subheader("📰 2차: 뉴스 센티먼트 융합")
+                            cD, cE, cF = st.columns(3)
+                            news_emoji = "🔥" if sentiment_score > 0 else ("🛑" if sentiment_score < 0 else "➖")
+                            cD.metric(f"뉴스 ({news_emoji})", f"{sentiment_score:+.2f}점")
+                            cE.metric("가산점", f"{news_impact:+.1f}%p")
+                            
+                            delta_str = "시뮬레이션!" if is_simulated else None
+                            cF.metric("최종 확신도", f"{final_prob_pct:.1f}%", delta=delta_str, delta_color="inverse")
+                            
+                            st.markdown("---")
+                            st.subheader(f"🎯 {timeframe.split(' ')[0]} 매매 가이드")
+                            
+                            if timeframe == "일봉 (단기 5일)":
+                                tp_rate, sl_rate = 4.0, -3.0
+                            elif timeframe == "주봉 (중기 4주)":
+                                tp_rate, sl_rate = 8.0, -5.0
+                            else: # 월봉 (장기 3개월)
+                                tp_rate, sl_rate = 12.0, -10.0
+                                
+                            target_price = curr_p * (1 + (tp_rate / 100))
+                            stop_loss = curr_p * (1 + (sl_rate / 100))
+                            
+                            # 🌟 [수정 완료] 거대한 st.metric 대신 깔끔한 텍스트 리스트로 통일
+                            st.write(f"- 적정 매수가: `{int(curr_p):,}원`")
+                            st.write(f"- 목표가 (+{tp_rate}%): `{int(target_price):,}원`")
+                            st.write(f"- 손절가 ({sl_rate}%): `{int(stop_loss):,}원`")
+                                                                            
+                            st.markdown("---")
+                            st.write(f"📊 실시간 수급 (비중)")
+                            st.write(f"- 외국인: {f_r * 100:+.2f}%")
+                            st.write(f"- 기  관: {i_r * 100:+.2f}%")
 
                     st.markdown("---")
                     st.subheader(f"📰 {name} 주요 최신 뉴스 (표본 100개 중 최신 10개)")
@@ -933,139 +978,111 @@ if menu == "단일 종목 스캐너":
                             emoji = "🔥" if score > 0.3 else ("🛑" if score < -0.3 else "➖")
                             st.markdown(f"• `{n['date']}` | {emoji} **[{score:+.2f}점]** [{n['title']}]({n['link']})")
                     else: st.write("최근 30일간 검색된 뉴스가 없습니다.")
-                else: st.error("데이터가 부족하여 분석할 수 없습니다.")
-            except Exception as e: st.error(f"분석 중 오류 발생: {e}")
+                except Exception as e: st.error(f"분석 중 오류 발생: {e}")
 
-elif menu == "섹터 주도주 레이더":
-        st.title("섹터 & 테마 머니플로우")
-        st.info("시장의 큰 파도(업종)와 빠른 물결(테마)을 동시에 분석하여 자금의 종착지를 찾습니다.")
+    # 🌟 [수정완료] 섹터 주도주 레이더 (CSV에서 데이터 로드)
+    elif menu == "섹터 주도주 레이더":
+        st.title("🏢 섹터 & 테마 머니플로우 (사전 분석)")
+        st.info("시장의 큰 파도(업종)와 빠른 물결(테마)을 요약한 새벽 분석 리포트입니다.")
         
-        # 🌟 1. 탭을 그리기 전에 데이터를 먼저 한 번에 수집합니다.
-        with st.spinner("업종 및 테마 전수조사 및 AI 데이터 분석 중 (약 10~15초 소요)..."):
-            full_up, detail_up = get_naver_market_data("upjong", 76)
-            full_th, detail_th = get_naver_market_data("theme", 264)
-        
-        # 🌟 2. 설명 바로 밑에 '종합 피드백'을 크게 띄워줍니다.
-        if not full_up.empty and not full_th.empty:
-            st.markdown(generate_unified_market_briefing(full_up, full_th), unsafe_allow_html=True)
-                
+        if os.path.exists(SECTOR_UP_CSV) and os.path.exists(SECTOR_TH_CSV):
+            detail_up = pd.read_csv(SECTOR_UP_CSV)
+            detail_th = pd.read_csv(SECTOR_TH_CSV)
+            
+            st.markdown(generate_unified_market_briefing(detail_up, detail_th), unsafe_allow_html=True)
+            
             tab1, tab2 = st.tabs(["업종별 사이클 (Industry)", "테마별 수급 (Theme)"])
-        
             with tab1:
-                with st.spinner("업종별 실시간 데이터를 수집 중..."):
-                    # 🌟 수정포인트 1: 두 개의 변수로 나누어 받습니다.
-                    full_up, detail_up = get_naver_market_data("upjong", 79)
-                
-                    if not full_up.empty and not detail_up.empty:
-                        # 🌟 수정포인트 2: 브리핑에는 전체 통계(full_up)를 넣습니다.
-                        st.markdown(generate_live_sector_briefing(full_up, "업종"))       
-                    
-                        # 🌟 수정포인트 3: 표에는 1등/꼴등이 매핑된 상세 데이터(detail_up)를 출력합니다.
-                        st.dataframe(
-                            detail_up.style.format({
-                                "등락률": "{:+.2f}%", 
-                                "1등 수익률": "{:+.2f}%", 
-                                "꼴등 수익률": "{:+.2f}%"
-                            }).map(
-                                lambda x: 'color: #FF4B4B; font-weight: bold' if x > 0 else ('color: #1C83E1' if x < 0 else 'color: gray'), 
-                                subset=["등락률", "1등 수익률", "꼴등 수익률"]
-                            ),
-                            use_container_width=True
-                        )
-                    else: st.error("업종 데이터를 불러올 수 없습니다.")
-
+                st.markdown(generate_live_sector_briefing(detail_up, "업종"))
+                st.dataframe(
+                    detail_up.style.format({"등락률": "{:+.2f}%", "1등 수익률": "{:+.2f}%", "꼴등 수익률": "{:+.2f}%"}).map(
+                        lambda x: 'color: #FF4B4B; font-weight: bold' if x > 0 else ('color: #1C83E1' if x < 0 else 'color: gray'), 
+                        subset=["등락률", "1등 수익률", "꼴등 수익률"]
+                    ),
+                    use_container_width=True
+                )
             with tab2:
-                with st.spinner("테마별 실시간 데이터를 전수조사 중입니다. (최초 1회 약 10~20초 소요)..."):
-                    # 🌟 수정포인트 1: 두 개의 변수로 나누어 받습니다.
-                    full_th, detail_th = get_naver_market_data("theme", 264)
-                
-                    if not full_th.empty and not detail_th.empty:
-                        # 🌟 수정포인트 2: 브리핑에는 전체 통계(full_th)를 넣습니다.
-                        st.markdown(generate_live_sector_briefing(full_th, "테마"))
-                    
-                        # 🌟 수정포인트 3: 표에는 1등/꼴등이 매핑된 상세 데이터(detail_th)를 출력합니다.
-                        st.dataframe(
-                            detail_th.style.format({
-                                "등락률": "{:+.2f}%", 
-                                "1등 수익률": "{:+.2f}%", 
-                                "꼴등 수익률": "{:+.2f}%"
-                            }).map(
-                                lambda x: 'color: #FF4B4B; font-weight: bold' if x > 0 else ('color: #1C83E1' if x < 0 else 'color: gray'), 
-                                subset=["등락률", "1등 수익률", "꼴등 수익률"]
-                            ),
-                            use_container_width=True
-                        )
-                    else: st.error("테마 데이터를 불러올 수 없습니다.")
-                
-# 🌟 [신규 메뉴 추가] 자금 흐름 네트워크 맵
-elif menu == "자금 흐름 네트워크 맵":
-    st.title("시총 상위 자금 흐름 네트워크")
-    st.info("KOSPI/KOSDAQ 시장의 대형주들이 어떻게 묶여서 같이 오르고 내리는지 상관관계를 시각화합니다. (연결선이 굵고 많을수록 시장의 주도 테마입니다.)")
-    
-    m_type = st.radio("타겟 시장 선택", ["KOSPI", "KOSDAQ"], horizontal=True)
-    if st.button("네트워크 맵 분석 시작 (약 10초 소요)"):
-        with st.spinner(f"{m_type} 시총 상위 50개 종목의 최근 60일 상관관계를 분석 중입니다..."):
-            fig = draw_correlation_network(market=m_type, top_n=50)
-            st.plotly_chart(fig, use_container_width=True)
-
-elif menu == "ETF 스캐너":
-    st.title("ETF 레이더")
-    st.write("시장 전체의 자금 흐름과 분위기를 파악합니다.")
-    st.markdown("---")
-    st.subheader("🔥 AI 거래대금 상위 ETF 방향성 스캔")
-    if st.button("ETF 스캔 시작 (Top 20)"):
-        with st.spinner("거래대금 상위 ETF 타점 분석 중..."):
-            etf_df = get_v6_market_rankings("ETF/KR", top_n=20)
-            if not etf_df.empty:
-                display_df = etf_df.copy()
-                display_df['최종확률'] = display_df['최종확률'].apply(lambda x: f"{x:.1f}%")
-                st.dataframe(display_df[['종목명', '코드', '현재가', '최종확률']].sort_values("최종확률", ascending=False).reset_index(drop=True), use_container_width=True)
-
-elif menu == "스윙 타점 스캐너":
-    st.title("저격수 스캐너 (AI + News)")
-    st.info(f"📅 30개 종목의 기술적 타점과 뉴스 센티먼트(호재/악재)를 동시에 스캔합니다.")
-    if model_gru is None or model_lgb is None:
-        st.error(f"❌ AI 모델 파일을 불러오지 못했습니다.")
-        st.stop()
-        
-    m_type = st.radio("타겟 시장 선택", ["KOSDAQ", "KOSPI"], horizontal=True)
-    if st.button(f"🚀 {m_type} 시총 Top 30 타점 스캔 (약 2~3분 소요)"):
-        with st.spinner("과거 수급 데이터와 실시간 구글 뉴스를 융합 분석 중입니다..."):
-            rank_df = get_v6_market_rankings(m_type, top_n=30)
-            
-        if rank_df.empty: st.error("⚠️ 데이터를 불러오지 못했습니다.")
+                st.markdown(generate_live_sector_briefing(detail_th, "테마"))
+                st.dataframe(
+                    detail_th.style.format({"등락률": "{:+.2f}%", "1등 수익률": "{:+.2f}%", "꼴등 수익률": "{:+.2f}%"}).map(
+                        lambda x: 'color: #FF4B4B; font-weight: bold' if x > 0 else ('color: #1C83E1' if x < 0 else 'color: gray'), 
+                        subset=["등락률", "1등 수익률", "꼴등 수익률"]
+                    ),
+                    use_container_width=True
+                )
         else:
-            display_df = rank_df.copy()
-            cols_order = ['종목명', '코드', '업종/테마 태그', '현재가', '기본확률(AI)', '뉴스점수', '최종확률']
-            format_df = display_df[cols_order]
+            st.warning("⚠️ 아직 섹터 분석 데이터(CSV)가 생성되지 않았습니다. 깃허브 액션 실행을 확인하세요.")
+
+    # 🌟 자금 흐름 네트워크 맵
+    elif menu == "자금 흐름 네트워크 맵":
+        st.title("시총 상위 자금 흐름 네트워크")
+        st.info("KOSPI/KOSDAQ 시장의 대형주들이 어떻게 묶여서 같이 오르고 내리는지 상관관계를 시각화합니다. (연결선이 굵고 많을수록 시장의 주도 테마입니다.)")
+        
+        m_type = st.radio("타겟 시장 선택", ["KOSPI", "KOSDAQ"], horizontal=True)
+        if st.button("네트워크 맵 분석 시작 (약 10초 소요)"):
+            with st.spinner(f"{m_type} 시총 상위 50개 종목의 최근 60일 상관관계를 분석 중입니다..."):
+                fig = draw_correlation_network(market=m_type, top_n=50)
+                st.plotly_chart(fig, use_container_width=True)
+
+    # 🌟 [수정완료] ETF 스캐너 (CSV에서 데이터 로드)
+    elif menu == "ETF 스캐너":
+        st.title("🔥 ETF AI 방향성 레이더 (사전 분석)")
+        st.write("시장 전체의 자금 흐름과 분위기를 파악합니다.")
+        st.markdown("---")
+        
+        if os.path.exists(ETF_CSV):
+            mod_time = datetime.fromtimestamp(os.path.getmtime(ETF_CSV)).strftime('%Y-%m-%d %H:%M')
+            st.success(f"📅 마지막 업데이트: {mod_time} (KST)")
+            etf_df = pd.read_csv(ETF_CSV)
             
-            format_df['기본확률(AI)'] = format_df['기본확률(AI)'].apply(lambda x: f"{x:.1f}%")
-            format_df['뉴스점수'] = format_df['뉴스점수'].apply(lambda x: f"{x:+.2f}점")
-            format_df['최종확률'] = format_df['최종확률'].apply(lambda x: f"{x:.1f}%")
+            # 문자열이 아닐 경우 % 포맷팅 처리
+            if etf_df['최종확률'].dtype in [float, int]:
+                etf_df['최종확률'] = etf_df['최종확률'].apply(lambda x: f"{x:.1f}%")
+                
+            st.dataframe(etf_df[['종목명', '코드', '현재가', '최종확률']].sort_values("최종확률", ascending=False).reset_index(drop=True), use_container_width=True)
+        else:
+            st.warning("⚠️ 아직 ETF 스캔 데이터(CSV)가 생성되지 않았습니다. 깃허브 액션 실행을 확인하세요.")
+
+    # 🌟 스윙 타점 스캐너
+    elif menu == "스윙 타점 스캐너":
+        st.title("🎯 저격수 스캐너 (사전 분석 완료 모드)")
+        
+        if os.path.exists(RESULT_CSV):
+            mod_time = datetime.fromtimestamp(os.path.getmtime(RESULT_CSV)).strftime('%Y-%m-%d %H:%M')
+            st.success(f"📅 마지막 데이터 업데이트: {mod_time} (KST)")
             
-            sniper_s_df = format_df[display_df['최종확률'] >= 70.0].sort_values(by=display_df['최종확률'].name, ascending=False).reset_index(drop=True)
-            sniper_a_df = format_df[(display_df['최종확률'] >= 60.0) & (display_df['최종확률'] < 70.0)].sort_values(by=display_df['최종확률'].name, ascending=False).reset_index(drop=True)
+            full_df = pd.read_csv(RESULT_CSV)
             
-            st.markdown("---")
-            # 🌟 [보너스] AI 바텀업 주도 섹터 자동 추출 로직
-            from collections import Counter
-            high_prob_df = pd.concat([sniper_s_df, sniper_a_df])
-            if not high_prob_df.empty:
+            if '업종/테마 태그' not in full_df.columns:
+                tag_map = get_stock_tags_mapping()
+                full_df['업종/테마 태그'] = full_df['코드'].apply(lambda x: tag_map.get(str(x).zfill(6), "🏢 분류없음"))
+
+            sniper_s_df = full_df[full_df['최종확률'] >= 70.0].sort_values(by='최종확률', ascending=False).reset_index(drop=True)
+            sniper_a_df = full_df[(full_df['최종확률'] >= 60.0) & (full_df['최종확률'] < 70.0)].sort_values(by='최종확률', ascending=False).reset_index(drop=True)
+
+            if not sniper_s_df.empty or not sniper_a_df.empty:
+                from collections import Counter
+                high_prob_df = pd.concat([sniper_s_df, sniper_a_df])
                 sectors = [tag.split('|')[0].replace('🏢', '').strip() for tag in high_prob_df['업종/테마 태그'] if '분류없음' not in tag]
                 if sectors:
                     top_sector = Counter(sectors).most_common(1)[0][0]
-                    st.error(f"🧠 **[AI 바텀업 분석]** 오늘 S급/A급 타점이 가장 많이 포착된 시장의 숨은 주도 업종은 **[{top_sector}]** 입니다!")
-                    
+                    st.error(f"🧠 **[AI 바텀업 분석]** 오늘의 주도 업종은 **[{top_sector}]** 입니다!")
+
             st.markdown("---")
             if not sniper_s_df.empty:
-                st.error(f"🔥 **[S급] 70% 이상 초고도 확신 타점 ({len(sniper_s_df)}건)**")
+                st.error(f"🔥 **[S급] 초고도 확신 타점 ({len(sniper_s_df)}건)**")
                 st.dataframe(sniper_s_df, use_container_width=True)
-            else: st.warning("🔥 오늘 장은 70% 이상 확신할 만한 S급 매수 타점이 없습니다.")
                 
             if not sniper_a_df.empty:
-                st.info(f"🚀 **[A급] 60% 이상 매수 우위 타점 ({len(sniper_a_df)}건)**")
+                st.info(f"🚀 **[A급] 강한 확신 타점 ({len(sniper_a_df)}건)**")
                 st.dataframe(sniper_a_df, use_container_width=True)
-                
-            st.markdown("---")
-            st.write("📋 전체 스캔 결과 (B급 이하 포함)")
-            st.dataframe(format_df.sort_values(by=display_df['최종확률'].name, ascending=False).reset_index(drop=True), use_container_width=True)
+
+            with st.expander("📋 전체 분석 데이터 보기 (B급 이하 포함)"):
+                st.dataframe(full_df.sort_values(by='최종확률', ascending=False), use_container_width=True)
+
+        else:
+            st.warning("⚠️ 아직 사전 분석 결과 파일(CSV)이 없습니다. 깃허브 액션이 실행되었는지 확인하세요.")
+
+        if st.sidebar.button("🔄 실시간 스캔 강제 실행"):
+            st.cache_data.clear()
+            st.rerun()
