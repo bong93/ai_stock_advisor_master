@@ -247,10 +247,17 @@ def run_scanner(mode="morning"):
     if not model_gru or not model_lgb: return
     
     try:
-        df_list = fdr.StockListing('KOSPI')
-        tickers = df_list.sort_values('Marcap', ascending=False).head(100)['Code'].tolist()
-        names = df_list.sort_values('Marcap', ascending=False).head(100)['Name'].tolist()
+        df_krx = fdr.StockListing('KRX')
+        df_kospi = df_krx[df_krx['Market'] == 'KOSPI'].sort_values('Marcap', ascending=False).head(100)
+        df_kosdaq = df_krx[df_krx['Market'] == 'KOSDAQ'].sort_values('Marcap', ascending=False).head(100)
+        df_list = pd.concat([df_kospi, df_kosdaq])
+        
+        tickers = df_list['Code'].tolist()
+        names = df_list['Name'].tolist()
+        markets = df_list['Market'].tolist() # 🌟 시장(KOSPI/KOSDAQ) 정보 추가
+        
         t_map = dict(zip(tickers, names))
+        m_map = dict(zip(tickers, markets))
     except: return
         
     results = []
@@ -286,6 +293,7 @@ def run_scanner(mode="morning"):
             sl_price = int(curr_price * 0.97)
             
             res_dict = {
+                "시장": m_map[ticker],
                 "종목명": t_map[ticker],
                 "코드": ticker,
                 "최종확률": final_prob, 
