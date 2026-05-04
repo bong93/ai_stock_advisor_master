@@ -827,7 +827,16 @@ if check_password():
                         # 종목명에 위 ETF 브랜드가 포함되어 있지 않을 때만 뉴스를 긁어옵니다.
                         if not any(brand in name for brand in etf_brands):
                             sentiment_score, news_items = get_news_sentiment_details(name, display=100)
-                            
+                        if not is_etf and ticker.isdigit():
+                            try:
+                                # 2차 방어: 뉴스 검색이 실패하더라도 절대 뻗지 않도록 try-except로 감쌉니다.
+                                result = get_news_sentiment_details(name, display=100)
+                                if result and len(result) == 2:
+                                    sentiment_score, news_items = result
+                            except Exception as e:
+                                print(f"뉴스 수집 중 예외 발생 (무시함): {e}")
+                                sentiment_score, news_items = 0.0, []
+                                
                         news_impact = sentiment_score * 5.0
                         final_prob_pct = max(0.0, min(100.0, base_prob_pct + news_impact))
                         
