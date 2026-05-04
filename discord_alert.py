@@ -113,6 +113,80 @@ def get_naver_supply_demand_history(code, pages=4):
         return pd.DataFrame(records).set_index('Date').sort_index()
     return pd.DataFrame()
 
+# 🌟 [신규 추가] 네이버 업종/테마 데이터 수집 엔진 (대시보드 연동용)
+def get_naver_market_data(group_type="upjong", count=50):
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36'}
+    data = []
+    page = 1
+    seen_codes = set()
+    
+    while True:
+        list_url = "https://finance.naver.com/sise/sise_group.naver?type=upjong" if group_type == "upjong" else f"https://finance.naver.com/sise/theme.naver?page={page}"
+        try:
+            res = requests.get(list_url, headers=headers, timeout=10)
+            res.encoding = 'euc-kr'
+            soup = BeautifulSoup(res.text, 'html.parser')
+            table = soup.select_one('table.type_1')
+            if not table: break
+
+            rows = table.select('tr')
+            page_item_count = 0
+            is_duplicate_page = False
+            for row in rows:
+                cols = row.select('td')
+                if len(cols) >= 2:
+                    link_tag = cols[0].find('a')
+                    if link_tag and 'no=' in link_tag.get('href', ''):
+                        code = link_tag['href'].split('no=')[-1].split('&')[0] 
+                        if code in seen_codes:
+                            is_duplicate_page = True
+                            break
+                        seen_codes.add(code)
+                        name = link_tag.text.strip()
+                        change_text = cols[1].text.strip().replace('%', '').replace('+', '')
+                        try: change_val = float(change_text)
+                        except: change_val = 0.0
+                        data.append({"이름": name, "등락률": change_val, "code": code})
+                        page_item_count += 1
+            if group_type == "upjong" or page_item_count == 0 or is_duplicate_page: break
+            if page > 15: break
+            page += 1
+        except: break
+
+    full_df = pd.DataFrame(data).sort_values("등락률", ascending=False).reset_index(drop=True)
+    final_list = []
+    for i in range(min(count, len(full_df))):
+        row = full_df.iloc[i]
+        detail_url = f"https://finance.naver.com/sise/sise_group_detail.naver?type={group_type}&no={row['code']}"
+        try:
+            d_res = requests.get(detail_url, headers=headers, timeout=5)
+            d_res.encoding = 'euc-kr'
+            d_soup = BeautifulSoup(d_res.text, 'html.parser')
+            stock_table = d_soup.select_one('table.type_5')
+            max_change, min_change = -999.0, 999.0
+            top_name, bottom_name = "-", "-"
+            target_td_idx = 3 if group_type == "upjong" else 4
+            
+            if stock_table:
+                for s_row in stock_table.select('tr'):
+                    name_cell = s_row.select_one('td.name a')
+                    tds = s_row.select('td')
+                    if name_cell and len(tds) > target_td_idx:
+                        s_name = name_cell.text.strip()
+                        change_text = tds[target_td_idx].text.strip().replace('%', '').replace('+', '').replace(',', '')
+                        if not change_text: continue 
+                        try:
+                            s_change = float(change_text)
+                            if s_change > max_change: max_change, top_name = s_change, s_name
+                            if s_change < min_change: min_change, bottom_name = s_change, s_name
+                        except: continue
+            if max_change == -999.0: max_change = 0.0
+            if min_change == 999.0: min_change = 0.0
+            final_list.append({"이름": row['이름'], "등락률": row['등락률'], "1등주(대장)": top_name, "1등 수익률": max_change, "꼴등주(부진)": bottom_name, "꼴등 수익률": min_change})
+        except: continue
+
+    return full_df, pd.DataFrame(final_list)
+
 def extract_features_v6(ticker, df_chart, macro_df):
     if len(df_chart) < 60: return pd.DataFrame()
     
@@ -206,14 +280,15 @@ def run_scanner(mode="morning"):
             
             final_prob = (gru_prob * 0.5 + lgb_prob * 0.5) * 100
             
-            # 🌟 [수정포인트 1] 적정가, 목표가(+4%), 손절가(-3%) 계산 로직 추가
+            # 🌟 [수정포인트] 적정가, 목표가, 손절가 계산 & Streamlit 규격에 맞게 '최종확률'과 '코드' 통일
             curr_price = int(pred_df['Close'].iloc[-1])
-            tp_price = int(curr_price * 1.04) # 일봉 목표가 4%
-            sl_price = int(curr_price * 0.97) # 일봉 손절가 -3%
+            tp_price = int(curr_price * 1.04)
+            sl_price = int(curr_price * 0.97)
             
             res_dict = {
                 "종목명": t_map[ticker],
-                "상승확률": final_prob, 
+                "코드": ticker,
+                "최종확률": final_prob, 
                 "예측시점가격": curr_price,
                 "목표가": tp_price,
                 "손절가": sl_price
@@ -229,18 +304,63 @@ def run_scanner(mode="morning"):
     if rank_df.empty: return
 
     if mode == "morning":
-        s_class = rank_df[rank_df["상승확률"] >= 70.0].sort_values("상승확률", ascending=False)
-        a_class = rank_df[(rank_df["상승확률"] >= 60.0) & (rank_df["상승확률"] < 70.0)].sort_values("상승확률", ascending=False)
+        # 🌟 1. 종목 스캔 CSV 저장 (Streamlit 대시보드용)
+        rank_df.to_csv("morning_scan_result.csv", index=False, encoding='utf-8-sig')
+        print("✅ [1/4] 종목 스캔 CSV 저장 완료")
+
+        # 🌟 2. 섹터/테마 데이터 수집 및 저장
+        print("🔄 섹터/테마 데이터 수집 중...")
+        try:
+            _, detail_up = get_naver_market_data("upjong", 76)
+            detail_up.to_csv("sector_upjong.csv", index=False, encoding='utf-8-sig')
+            _, detail_th = get_naver_market_data("theme", 264)
+            detail_th.to_csv("sector_theme.csv", index=False, encoding='utf-8-sig')
+            print("✅ [2/4] 섹터/테마 CSV 저장 완료")
+        except Exception as e:
+            print(f"❌ 섹터/테마 수집 실패: {e}")
+
+        # 🌟 3. ETF 데이터 수집 및 저장
+        print("🔄 ETF 레이더 스캔 중...")
+        try:
+            etf_list = fdr.StockListing('ETF/KR')
+            etf_tickers = etf_list.sort_values('Volume', ascending=False).head(20)['Symbol'].tolist()
+            etf_names = etf_list.sort_values('Volume', ascending=False).head(20)['Name'].tolist()
+            etf_map = dict(zip(etf_tickers, etf_names))
+            etf_results = []
+            
+            for t in etf_tickers:
+                df = fdr.DataReader(t, (datetime.now() - pd.Timedelta(days=150)).strftime('%Y-%m-%d'))
+                f_df = extract_features_v6(t, df, macro_df)
+                if f_df.empty or len(f_df) < 60: continue
+                
+                scaled = RobustScaler().fit_transform(f_df.tail(60).values)
+                input_t = torch.FloatTensor(scaled).unsqueeze(0).to(device)
+                with torch.no_grad(): gru_prob = torch.softmax(model_gru(input_t), dim=1).cpu().numpy()[0][1]
+                lgb_prob = model_lgb.predict_proba(scaled[-1].reshape(1, -1))[0][1]
+                
+                etf_prob = (gru_prob * 0.5 + lgb_prob * 0.5) * 100
+                etf_results.append({
+                    "종목명": etf_map[t], "코드": t, "현재가": int(df['Close'].iloc[-1]), "최종확률": etf_prob
+                })
+            pd.DataFrame(etf_results).to_csv("etf_scanner_result.csv", index=False, encoding='utf-8-sig')
+            print("✅ [3/4] ETF CSV 저장 완료")
+        except Exception as e:
+            print(f"❌ ETF 수집 실패: {e}")
+
+        print("✅ [4/4] 디스코드 알람 전송 준비...")
+        
+        # 디스코드 메시지 전송 로직
+        s_class = rank_df[rank_df["최종확률"] >= 70.0].sort_values("최종확률", ascending=False)
+        a_class = rank_df[(rank_df["최종확률"] >= 60.0) & (rank_df["최종확률"] < 70.0)].sort_values("최종확률", ascending=False)
         
         fields = []
-        # 🌟 [수정포인트 2] 디스코드 메시지에 목표가/손절가 포매팅 추가
         if not s_class.empty:
             fields.append({"name": "🔥 **[S급] 초고도 확신 타점 (승률 85%)**", "value": "적극적인 비중 베팅을 고려할 만한 강력한 상승 신호입니다.", "inline": False})
-            fields.extend([{"name": f"🎯 {row['종목명']}", "value": f"확률: **{row['상승확률']:.1f}%**\n💵 적정가: `{row['예측시점가격']:,}원`\n🚀 목표가: `{row['목표가']:,}원` (+4%)\n🛑 손절가: `{row['손절가']:,}원` (-3%)", "inline": False} for _, row in s_class.iterrows()])
+            fields.extend([{"name": f"🎯 {row['종목명']}", "value": f"확률: **{row['최종확률']:.1f}%**\n💵 적정가: `{row['예측시점가격']:,}원`\n🚀 목표가: `{row['목표가']:,}원` (+4%)\n🛑 손절가: `{row['손절가']:,}원` (-3%)", "inline": False} for _, row in s_class.iterrows()])
             
         if not a_class.empty:
             fields.append({"name": "🚀 **[A급] 강한 확신 타점 (승률 60%↑)**", "value": "매수 우위 구간입니다. 수급과 호가를 체크하며 진입하세요.", "inline": False})
-            fields.extend([{"name": f"✅ {row['종목명']}", "value": f"확률: **{row['상승확률']:.1f}%**\n💵 적정가: `{row['예측시점가격']:,}원`\n🚀 목표가: `{row['목표가']:,}원` (+4%)\n🛑 손절가: `{row['손절가']:,}원` (-3%)", "inline": False} for _, row in a_class.iterrows()])
+            fields.extend([{"name": f"✅ {row['종목명']}", "value": f"확률: **{row['최종확률']:.1f}%**\n💵 적정가: `{row['예측시점가격']:,}원`\n🚀 목표가: `{row['목표가']:,}원` (+4%)\n🛑 손절가: `{row['손절가']:,}원` (-3%)", "inline": False} for _, row in a_class.iterrows()])
             
         if not fields:
             fields.append({"name": "🛑 **관망 권장**", "value": "오늘 장은 60% 이상 확신할 만한 S급/A급 매수 타점이 포착되지 않았습니다.", "inline": False})
@@ -248,20 +368,18 @@ def run_scanner(mode="morning"):
         send_discord("🌅 [08:45] 오늘 장 AI 주도주 브리핑", fields, 15158332)
 
     elif mode == "afternoon":
-        # 🌟 [수정포인트 3] 오후 알림: S/A급이 없을 때 가장 높은 확률 1개만 평가하는 로직 추가
-        picks = rank_df[rank_df["상승확률"] >= 60.0].sort_values("상승확률", ascending=False)
+        picks = rank_df[rank_df["최종확률"] >= 60.0].sort_values("최종확률", ascending=False)
         fields = []
         
         if picks.empty:
-            # S/A급이 없으면 전체에서 상승확률 1위 종목 1개만 추출
-            top_pick = rank_df.sort_values("상승확률", ascending=False).head(1)
+            top_pick = rank_df.sort_values("최종확률", ascending=False).head(1)
             row = top_pick.iloc[0]
             change_pct = ((row['오늘종가'] - row['예측시점가격']) / row['예측시점가격']) * 100
             emoji = "🔴 상승 (놓침)" if change_pct > 0 else ("🔵 하락 (방어성공)" if change_pct < 0 else "⚪ 보합")
             
             fields.append({"name": "💤 오늘 아침 추천 타점 없음 (관망 채점)", "value": "아침에는 60% 이상의 종목이 없어 매수를 쉬었습니다. 가장 점수가 높았던(B급 1등) 종목의 오후 결과를 복기합니다.", "inline": False})
             fields.append({
-                "name": f"📝 {row['종목명']} (아침 확률: {row['상승확률']:.1f}%)", 
+                "name": f"📝 {row['종목명']} (아침 확률: {row['최종확률']:.1f}%)", 
                 "value": f"시작가: {row['예측시점가격']:,}원 ➡️ 마감가: {row['오늘종가']:,}원\n관망 결과: {emoji} **({change_pct:+.2f}%)**", 
                 "inline": False
             })
@@ -275,7 +393,7 @@ def run_scanner(mode="morning"):
                 
                 emoji = "🔴 적중" if change_pct > 0 else ("🔵 실패" if change_pct < 0 else "⚪ 보합")
                 fields.append({
-                    "name": f"📝 {row['종목명']} (아침 확률: {row['상승확률']:.1f}%)", 
+                    "name": f"📝 {row['종목명']} (아침 확률: {row['최종확률']:.1f}%)", 
                     "value": f"시작가: {row['예측시점가격']:,}원 ➡️ 마감가: {row['오늘종가']:,}원\n결과: {emoji} **({change_pct:+.2f}%)**", 
                     "inline": False
                 })
