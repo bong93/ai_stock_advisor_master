@@ -1046,7 +1046,8 @@ if check_password():
             if etf_df['최종확률'].dtype in [float, int]:
                 etf_df['최종확률'] = etf_df['최종확률'].apply(lambda x: f"{x:.1f}%")
                 
-            st.dataframe(etf_df[['종목명', '코드', '현재가', '최종확률']].sort_values("최종확률", ascending=False).reset_index(drop=True), use_container_width=True)
+            display_cols = ['시장', '종목명', '코드', '예측시점가격', '목표가', '손절가', '최종확률']
+            st.dataframe(etf_df[display_cols].sort_values("최종확률", ascending=False).reset_index(drop=True), use_container_width=True)
         else:
             st.warning("⚠️ 아직 ETF 스캔 데이터(CSV)가 생성되지 않았습니다. 깃허브 액션 실행을 확인하세요.")
 
