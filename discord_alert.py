@@ -13,6 +13,9 @@ import FinanceDataReader as fdr
 from bs4 import BeautifulSoup
 import joblib
 import warnings
+import concurrent.futures  # 🌟 멀티스레딩 엔진
+import random              # 🌟 네이버 차단 우회용 난수 발생기
+import time
 
 warnings.filterwarnings('ignore', category=FutureWarning)
 warnings.filterwarnings("ignore", message="X does not have valid feature names")
@@ -64,7 +67,7 @@ def send_discord(title, fields_data, color):
     }
     requests.post(DISCORD_WEBHOOK_URL, json=payload, headers={"Content-Type": "application/json"})
 
-# --- 3. V6 데이터 파이프라인 (네이버 수급 80일치 + 24 피처) ---
+# --- 3. V6 데이터 파이프라인 ---
 def load_macro_feature_data():
     end_dt = datetime.today().strftime('%Y-%m-%d')
     start_dt = (datetime.today() - timedelta(days=200)).strftime('%Y-%m-%d')
@@ -82,7 +85,6 @@ def load_macro_feature_data():
     macro_df['vix_ret'] = macro_df['vix'].pct_change()
     return macro_df[['usd_krw_ret', 'nasdaq_ret', 'kospi_ret', 'kosdaq_ret', 'vix_ret']]
 
-# 🔥 pykrx를 대체하는 네이버 과거 수급 데이터 수집 엔진
 def get_naver_supply_demand_history(code, pages=4):
     records = []
     for p in range(1, pages + 1):
@@ -113,7 +115,6 @@ def get_naver_supply_demand_history(code, pages=4):
         return pd.DataFrame(records).set_index('Date').sort_index()
     return pd.DataFrame()
 
-# 🌟 [신규 추가] 네이버 업종/테마 데이터 수집 엔진 (대시보드 연동용)
 def get_naver_market_data(group_type="upjong", count=50):
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36'}
     data = []
@@ -190,7 +191,6 @@ def get_naver_market_data(group_type="upjong", count=50):
 def extract_features_v6(ticker, df_chart, macro_df):
     if len(df_chart) < 60: return pd.DataFrame()
     
-    # 🔥 네이버 수급 데이터 결합
     sd_df = get_naver_supply_demand_history(ticker, pages=4)
     df = df_chart.copy().join(macro_df, how='left')
     
@@ -241,82 +241,95 @@ def extract_features_v6(ticker, df_chart, macro_df):
     ]
     return feats[feature_cols]
 
-# --- 4. 스캐너 및 알람 실행 로직 ---
+# 🌟 [신규] 단일 종목 처리 함수 (멀티스레딩 대응)
+def process_single_ticker(ticker, name, market, mode, macro_df, model_gru, model_lgb):
+    try:
+        # 네이버 금융 봇 차단 방지를 위한 미세 딜레이 (0.1 ~ 0.5초 랜덤)
+        time.sleep(random.uniform(0.1, 0.5))
+        
+        df = fdr.DataReader(ticker, (datetime.now() - pd.Timedelta(days=150)).strftime('%Y-%m-%d'))
+        
+        if mode == "afternoon" and len(df) > 2:
+            pred_df = df.iloc[:-1] 
+        else:
+            pred_df = df
+            
+        f_df = extract_features_v6(ticker, pred_df, macro_df)
+        if f_df.empty or len(f_df) < 60: return None
+        
+        scaled = RobustScaler().fit_transform(f_df.tail(60).values)
+        input_t = torch.FloatTensor(scaled).unsqueeze(0).to(device)
+        
+        with torch.no_grad():
+            gru_prob = torch.softmax(model_gru(input_t), dim=1).cpu().numpy()[0][1]
+        lgb_prob = model_lgb.predict_proba(scaled[-1].reshape(1, -1))[0][1]
+        final_prob = (gru_prob * 0.5 + lgb_prob * 0.5) * 100
+        
+        curr_price = int(pred_df['Close'].iloc[-1])
+        tp_price = int(curr_price * 1.04)
+        sl_price = int(curr_price * 0.97)
+        
+        res_dict = {
+            "시장": market,
+            "종목명": name,
+            "코드": ticker,
+            "최종확률": final_prob, 
+            "예측시점가격": curr_price,
+            "목표가": tp_price,
+            "손절가": sl_price
+        }
+        
+        if mode == "afternoon":
+            res_dict["오늘종가"] = int(df['Close'].iloc[-1])
+            
+        return res_dict
+    except:
+        return None
+
+# --- 4. 메인 스캐너 및 알람 실행 로직 ---
 def run_scanner(mode="morning"):
     model_gru, model_lgb = load_ensemble_models()
     if not model_gru or not model_lgb: return
     
     try:
+        # 🌟 1. 시가총액(Marcap) 대신 '거래대금(Amount)' 상위 종목으로 필터링하여 시장의 핫이슈를 추적합니다.
         df_krx = fdr.StockListing('KRX')
-        df_kospi = df_krx[df_krx['Market'] == 'KOSPI'].sort_values('Marcap', ascending=False).head(100)
-        df_kosdaq = df_krx[df_krx['Market'] == 'KOSDAQ'].sort_values('Marcap', ascending=False).head(100)
+        df_kospi = df_krx[df_krx['Market'] == 'KOSPI'].sort_values('Amount', ascending=False).head(500)
+        df_kosdaq = df_krx[df_krx['Market'] == 'KOSDAQ'].sort_values('Amount', ascending=False).head(500)
         df_list = pd.concat([df_kospi, df_kosdaq])
         
         tickers = df_list['Code'].tolist()
         names = df_list['Name'].tolist()
-        markets = df_list['Market'].tolist() # 🌟 시장(KOSPI/KOSDAQ) 정보 추가
+        markets = df_list['Market'].tolist()
+    except Exception as e: 
+        print(f"종목 리스트 로드 에러: {e}")
+        return
         
-        t_map = dict(zip(tickers, names))
-        m_map = dict(zip(tickers, markets))
-    except: return
-        
-    results = []
     macro_df = load_macro_feature_data()
+    results = []
     
-    for i, ticker in enumerate(tickers):
-        if (i + 1) % 10 == 0:
-            print(f"🔄 분석 진행 중... [{i + 1} / 100] 완료", flush=True)
+    print(f"🚀 총 {len(tickers)}개 종목 (KOSPI 500 + KOSDAQ 500) 멀티스레드 스캔 시작...")
+    
+    # 🌟 2. 멀티스레딩(Multi-threading) 적용: 10개 종목을 동시에 분석
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        futures = {executor.submit(process_single_ticker, t, n, m, mode, macro_df, model_gru, model_lgb): t for t, n, m in zip(tickers, names, markets)}
+        
+        completed_count = 0
+        for future in concurrent.futures.as_completed(futures):
+            res = future.result()
+            if res: results.append(res)
             
-        try:
-            df = fdr.DataReader(ticker, (datetime.now() - pd.Timedelta(days=150)).strftime('%Y-%m-%d'))
-            
-            if mode == "afternoon" and len(df) > 2:
-                pred_df = df.iloc[:-1] 
-            else:
-                pred_df = df
-                
-            f_df = extract_features_v6(ticker, pred_df, macro_df)
-            if f_df.empty or len(f_df) < 60: continue
-            
-            scaled = RobustScaler().fit_transform(f_df.tail(60).values)
-            
-            input_t = torch.FloatTensor(scaled).unsqueeze(0).to(device)
-            with torch.no_grad():
-                gru_prob = torch.softmax(model_gru(input_t), dim=1).cpu().numpy()[0][1]
-            lgb_prob = model_lgb.predict_proba(scaled[-1].reshape(1, -1))[0][1]
-            
-            final_prob = (gru_prob * 0.5 + lgb_prob * 0.5) * 100
-            
-            # 🌟 [수정포인트] 적정가, 목표가, 손절가 계산 & Streamlit 규격에 맞게 '최종확률'과 '코드' 통일
-            curr_price = int(pred_df['Close'].iloc[-1])
-            tp_price = int(curr_price * 1.04)
-            sl_price = int(curr_price * 0.97)
-            
-            res_dict = {
-                "시장": m_map[ticker],
-                "종목명": t_map[ticker],
-                "코드": ticker,
-                "최종확률": final_prob, 
-                "예측시점가격": curr_price,
-                "목표가": tp_price,
-                "손절가": sl_price
-            }
-            
-            if mode == "afternoon":
-                res_dict["오늘종가"] = int(df['Close'].iloc[-1])
-                
-            results.append(res_dict)
-        except: continue
+            completed_count += 1
+            if completed_count % 50 == 0:
+                print(f"🔄 병렬 분석 진행 중... [{completed_count} / {len(tickers)}] 완료", flush=True)
 
     rank_df = pd.DataFrame(results)
     if rank_df.empty: return
 
     if mode == "morning":
-        # 🌟 1. 종목 스캔 CSV 저장 (Streamlit 대시보드용)
         rank_df.to_csv("morning_scan_result.csv", index=False, encoding='utf-8-sig')
-        print("✅ [1/4] 종목 스캔 CSV 저장 완료")
+        print("✅ [1/4] 1,000종목 병렬 스캔 CSV 저장 완료")
 
-        # 🌟 2. 섹터/테마 데이터 수집 및 저장
         print("🔄 섹터/테마 데이터 수집 중...")
         try:
             _, detail_up = get_naver_market_data("upjong", 76)
@@ -327,53 +340,43 @@ def run_scanner(mode="morning"):
         except Exception as e:
             print(f"❌ 섹터/테마 수집 실패: {e}")
 
-        # 🌟 3. ETF 데이터 수집 및 저장
         print("🔄 ETF 레이더 스캔 중...")
         try:
             etf_list = fdr.StockListing('ETF/KR')
             etf_tickers = etf_list.sort_values('Volume', ascending=False).head(20)['Symbol'].tolist()
             etf_names = etf_list.sort_values('Volume', ascending=False).head(20)['Name'].tolist()
-            etf_map = dict(zip(etf_tickers, etf_names))
-            etf_results = []
+            etf_markets = ["ETF"] * len(etf_tickers)
             
-            for t in etf_tickers:
-                df = fdr.DataReader(t, (datetime.now() - pd.Timedelta(days=150)).strftime('%Y-%m-%d'))
-                f_df = extract_features_v6(t, df, macro_df)
-                if f_df.empty or len(f_df) < 60: continue
-                
-                scaled = RobustScaler().fit_transform(f_df.tail(60).values)
-                input_t = torch.FloatTensor(scaled).unsqueeze(0).to(device)
-                with torch.no_grad(): gru_prob = torch.softmax(model_gru(input_t), dim=1).cpu().numpy()[0][1]
-                lgb_prob = model_lgb.predict_proba(scaled[-1].reshape(1, -1))[0][1]
-                
-                etf_prob = (gru_prob * 0.5 + lgb_prob * 0.5) * 100
-                etf_results.append({
-                    "종목명": etf_map[t], "코드": t, "현재가": int(df['Close'].iloc[-1]), "최종확률": etf_prob
-                })
+            etf_results = []
+            # ETF도 멀티스레드로 빠르게 긁어옵니다.
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as etf_executor:
+                etf_futures = [etf_executor.submit(process_single_ticker, t, n, m, mode, macro_df, model_gru, model_lgb) for t, n, m in zip(etf_tickers, etf_names, etf_markets)]
+                for future in concurrent.futures.as_completed(etf_futures):
+                    res = future.result()
+                    if res: etf_results.append(res)
+            
             pd.DataFrame(etf_results).to_csv("etf_scanner_result.csv", index=False, encoding='utf-8-sig')
             print("✅ [3/4] ETF CSV 저장 완료")
         except Exception as e:
             print(f"❌ ETF 수집 실패: {e}")
 
         print("✅ [4/4] 디스코드 알람 전송 준비...")
-        
-        # 디스코드 메시지 전송 로직
         s_class = rank_df[rank_df["최종확률"] >= 70.0].sort_values("최종확률", ascending=False)
         a_class = rank_df[(rank_df["최종확률"] >= 60.0) & (rank_df["최종확률"] < 70.0)].sort_values("최종확률", ascending=False)
         
         fields = []
         if not s_class.empty:
             fields.append({"name": "🔥 **[S급] 초고도 확신 타점 (승률 85%)**", "value": "적극적인 비중 베팅을 고려할 만한 강력한 상승 신호입니다.", "inline": False})
-            fields.extend([{"name": f"🎯 {row['종목명']}", "value": f"확률: **{row['최종확률']:.1f}%**\n💵 적정가: `{row['예측시점가격']:,}원`\n🚀 목표가: `{row['목표가']:,}원` (+4%)\n🛑 손절가: `{row['손절가']:,}원` (-3%)", "inline": False} for _, row in s_class.iterrows()])
+            fields.extend([{"name": f"🎯 [{row['시장']}] {row['종목명']}", "value": f"확률: **{row['최종확률']:.1f}%**\n💵 적정가: `{row['예측시점가격']:,}원`\n🚀 목표가: `{row['목표가']:,}원` (+4%)\n🛑 손절가: `{row['손절가']:,}원` (-3%)", "inline": False} for _, row in s_class.head(5).iterrows()])
             
         if not a_class.empty:
             fields.append({"name": "🚀 **[A급] 강한 확신 타점 (승률 60%↑)**", "value": "매수 우위 구간입니다. 수급과 호가를 체크하며 진입하세요.", "inline": False})
-            fields.extend([{"name": f"✅ {row['종목명']}", "value": f"확률: **{row['최종확률']:.1f}%**\n💵 적정가: `{row['예측시점가격']:,}원`\n🚀 목표가: `{row['목표가']:,}원` (+4%)\n🛑 손절가: `{row['손절가']:,}원` (-3%)", "inline": False} for _, row in a_class.iterrows()])
+            fields.extend([{"name": f"✅ [{row['시장']}] {row['종목명']}", "value": f"확률: **{row['최종확률']:.1f}%**\n💵 적정가: `{row['예측시점가격']:,}원`\n🚀 목표가: `{row['목표가']:,}원` (+4%)\n🛑 손절가: `{row['손절가']:,}원` (-3%)", "inline": False} for _, row in a_class.head(5).iterrows()])
             
         if not fields:
             fields.append({"name": "🛑 **관망 권장**", "value": "오늘 장은 60% 이상 확신할 만한 S급/A급 매수 타점이 포착되지 않았습니다.", "inline": False})
             
-        send_discord("🌅 [08:45] 오늘 장 AI 주도주 브리핑", fields, 15158332)
+        send_discord("🌅 [08:45] 1,000종목 스캔 AI 주도주 브리핑", fields, 15158332)
 
     elif mode == "afternoon":
         picks = rank_df[rank_df["최종확률"] >= 60.0].sort_values("최종확률", ascending=False)
@@ -387,28 +390,29 @@ def run_scanner(mode="morning"):
             
             fields.append({"name": "💤 오늘 아침 추천 타점 없음 (관망 채점)", "value": "아침에는 60% 이상의 종목이 없어 매수를 쉬었습니다. 가장 점수가 높았던(B급 1등) 종목의 오후 결과를 복기합니다.", "inline": False})
             fields.append({
-                "name": f"📝 {row['종목명']} (아침 확률: {row['최종확률']:.1f}%)", 
+                "name": f"📝 [{row['시장']}] {row['종목명']} (아침 확률: {row['최종확률']:.1f}%)", 
                 "value": f"시작가: {row['예측시점가격']:,}원 ➡️ 마감가: {row['오늘종가']:,}원\n관망 결과: {emoji} **({change_pct:+.2f}%)**", 
                 "inline": False
             })
         else:
             hit_count = 0
             total_profit = 0
-            for i, row in picks.iterrows():
+            # 카톡/디스코드 메시지 길이 제한 방지를 위해 상위 10개만 평가
+            for i, row in picks.head(10).iterrows():
                 change_pct = ((row['오늘종가'] - row['예측시점가격']) / row['예측시점가격']) * 100
                 total_profit += change_pct
                 if change_pct > 0: hit_count += 1
                 
                 emoji = "🔴 적중" if change_pct > 0 else ("🔵 실패" if change_pct < 0 else "⚪ 보합")
                 fields.append({
-                    "name": f"📝 {row['종목명']} (아침 확률: {row['최종확률']:.1f}%)", 
+                    "name": f"📝 [{row['시장']}] {row['종목명']} (아침 확률: {row['최종확률']:.1f}%)", 
                     "value": f"시작가: {row['예측시점가격']:,}원 ➡️ 마감가: {row['오늘종가']:,}원\n결과: {emoji} **({change_pct:+.2f}%)**", 
                     "inline": False
                 })
                 
-            avg_profit = total_profit / len(picks)
-            win_rate = (hit_count / len(picks)) * 100
-            fields.insert(0, {"name": "📊 **[오늘의 스나이퍼 성적표]**", "value": f"✅ 승률: **{win_rate:.0f}%**\n💰 평균 수익률: **{avg_profit:+.2f}%**\n---", "inline": False})
+            avg_profit = total_profit / len(picks.head(10))
+            win_rate = (hit_count / len(picks.head(10))) * 100
+            fields.insert(0, {"name": "📊 **[오늘의 상위 10픽 스나이퍼 성적표]**", "value": f"✅ 승률: **{win_rate:.0f}%**\n💰 평균 수익률: **{avg_profit:+.2f}%**\n---", "inline": False})
             
         send_discord("🏁 [16:00] 오늘 아침 S/A급 픽 채점 결과", fields, 10181046)
 
