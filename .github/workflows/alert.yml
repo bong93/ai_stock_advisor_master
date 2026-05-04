@@ -21,6 +21,8 @@ on:
 jobs:
   run-bot:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write  # 🌟 CSV 파일을 레포지토리에 다시 푸시하기 위해 꼭 필요한 쓰기 권한입니다!
 
     steps:
     - name: 📂 레포지토리 체크아웃 (LFS 포함)
@@ -38,7 +40,6 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-        # 🌟 아래 줄이 수정되었습니다! (FinanceDataReader -> finance-datareader)
         pip install requests pandas numpy torch scikit-learn pytz ta finance-datareader beautifulsoup4 lxml lightgbm joblib
 
     - name: 🌅 [자동] 장 시작 전 브리핑 실행 (08:45)
@@ -58,3 +59,12 @@ jobs:
       env:
         DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
       run: python discord_alert.py --mode ${{ inputs.mode }}
+      
+    - name: 💾 분석 결과 CSV 저장 및 깃허브 업로드
+      # 🌟 실행 중 새로 생성되거나 변경된 모든 .csv 파일을 감지하여 깃허브에 영구 저장합니다.
+      run: |
+        git config --global user.name "GitHub Actions Bot"
+        git config --global user.email "actions@github.com"
+        git add *.csv
+        git commit -m "📅 Data Update: $(date +'%Y-%m-%d %H:%M') AI 모델 분석 완료" || echo "No changes to commit"
+        git push
