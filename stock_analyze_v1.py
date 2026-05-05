@@ -1250,6 +1250,9 @@ if check_password():
                 st.write("📊 **실시간 시장 데이터로 모의투자 포트폴리오를 구성 중입니다...**")
                 prog = st.progress(0)
                 
+                # 🌟 [에러 해결 핵심] 꼬여있는 기존 엑셀 줄 번호를 0부터 다시 깔끔하게 정렬합니다.
+                target_df = target_df.reset_index(drop=True)
+                
                 # 시가(09:00) 및 현재가 조회
                 for i, row in target_df.iterrows():
                     ticker = str(row['코드']).zfill(6)
