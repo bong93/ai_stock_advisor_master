@@ -14,4 +14,4 @@ transformers
 pytz
 lxml
 joblib
-google-generativeai
+groq
