@@ -19,6 +19,7 @@ import os
 import warnings
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import networkx as nx
+import pytz
 
 # 🌟 최상단 배치 (Streamlit 설정)
 st.set_page_config(page_title="AI Quant Master", layout="wide", initial_sidebar_state="expanded")
@@ -578,16 +579,75 @@ def generate_ai_briefing(name, base_prob, news_score, final_prob, for_ratio, ins
 
 def draw_ichimoku_chart(df_plot):
     fig = go.Figure()
+    
+    # 🌟 [신규 기능 1] 매물대 (Volume Profile) 계산 및 추가
+    df_valid = df_plot.dropna(subset=['Close', 'Volume'])
+    if not df_valid.empty:
+        min_p, max_p = df_valid['Close'].min(), df_valid['Close'].max()
+        bins = np.linspace(min_p, max_p, 25) # 25개의 가격 구간으로 분할
+        df_valid['bin'] = pd.cut(df_valid['Close'], bins=bins)
+        vp = df_valid.groupby('bin', observed=False)['Volume'].sum()
+        
+        fig.add_trace(go.Bar(
+            x=vp.values, y=[b.mid for b in vp.index], orientation='h',
+            xaxis='x2', marker=dict(color='rgba(150, 150, 150, 0.3)', line=dict(width=0)),
+            hoverinfo='skip', showlegend=False, name='매물대'
+        ))
+
+    # 기존 일목균형표 및 캔들 차트
     fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot['senkou_span_a'], line=dict(width=0), showlegend=False))
     fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot['senkou_span_b'], line=dict(width=0), fill='tonexty', fillcolor='rgba(150, 150, 150, 0.2)', name='Kumo Cloud'))
     fig.add_trace(go.Candlestick(x=df_plot.index, open=df_plot['Open'], high=df_plot['High'], low=df_plot['Low'], close=df_plot['Close'], name='Price'))
     fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot['tenkan_sen'], line=dict(color='orange', width=1), name='전환선'))
     fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot['kijun_sen'], line=dict(color='dodgerblue', width=1), name='기준선'))
+    
     start_idx = max(0, len(df_plot) - 146)
-    fig.update_layout(height=500, template="plotly_dark", xaxis_rangeslider_visible=False, 
-                      xaxis=dict(type='date', range=[df_plot.index[start_idx], df_plot.index[-1]]), 
-                      margin=dict(l=10, r=10, t=30, b=10))
+    fig.update_layout(
+        height=550, template="plotly_dark", xaxis_rangeslider_visible=False, 
+        xaxis=dict(type='date', range=[df_plot.index[start_idx], df_plot.index[-1]]), 
+        # 🌟 매물대가 차트 왼쪽 1/3 지점까지만 표시되도록 스케일 조정
+        xaxis2=dict(overlaying='x', side='top', showgrid=False, showticklabels=False, range=[0, vp.max() * 3] if not df_valid.empty else [0,1]),
+        margin=dict(l=10, r=10, t=30, b=10)
+    )
     return fig
+
+def calculate_realtime_volume_burst(df_chart):
+    """현재 시간 비례 '예상 마감 거래량'이 20일 평균 대비 몇 % 폭발 중인지 계산"""
+    if len(df_chart) < 20: return 0.0, 0, 0
+    
+    curr_vol = df_chart['Volume'].iloc[-1]
+    vma_20 = df_chart['Volume'].iloc[-21:-1].mean() # 어제까지의 20일 평균 거래량
+    if vma_20 == 0: return 0.0, curr_vol, 0
+    
+    now = datetime.now(pytz.timezone('Asia/Seoul'))
+    market_open = now.replace(hour=9, minute=0, second=0)
+    market_close = now.replace(hour=15, minute=30, second=0)
+    
+    # 장전이거나 장마감 이후, 또는 휴일인 경우
+    if now < market_open or now > market_close:
+        return (curr_vol / vma_20) * 100, curr_vol, vma_20
+        
+    elapsed_mins = (now - market_open).total_seconds() / 60
+    if elapsed_mins < 5: elapsed_mins = 5 # 개장 직후 오류 방지
+    
+    expected_daily_vol = curr_vol * (390.0 / elapsed_mins)
+    burst_ratio = (expected_daily_vol / vma_20) * 100
+    
+    return burst_ratio, expected_daily_vol, vma_20
+
+def check_seasonality(df_chart):
+    """과거 5년간 이번 달(Month)에 상승했던 확률(계절성)을 분석"""
+    curr_month = datetime.now().month
+    monthly_df = df_chart.resample('ME').last()
+    monthly_df['ret'] = monthly_df['Close'].pct_change()
+    
+    # 이번 달과 같은 달의 데이터만 추출 (최대 5년치)
+    target_months = monthly_df[monthly_df.index.month == curr_month].tail(5)
+    if len(target_months) < 3: return "데이터 부족"
+    
+    win_rate = (len(target_months[target_months['ret'] > 0]) / len(target_months)) * 100
+    avg_ret = target_months['ret'].mean() * 100
+    return f"최근 5년간 {curr_month}월 상승 확률 **{win_rate:.0f}%** (평균 수익률 {avg_ret:+.1f}%)"
 
 def draw_correlation_network(market="KOSPI", top_n=30):
     try:
@@ -737,7 +797,7 @@ ETF_CSV = r"etf_scanner_result.csv"
 model_gru, model_lgb, device = load_ensemble_models(GRU_PATH, LGB_PATH)
 
 if check_password():
-    menu = st.sidebar.radio("메뉴 선택", ["단일 종목 스캐너", "섹터 주도주 레이더", "스윙 타점 스캐너", "자금 흐름 네트워크 맵", "ETF 스캐너"], horizontal=True, label_visibility="collapsed")
+    menu = st.sidebar.radio("메뉴 선택", ["단일 종목 스캐너", "섹터 주도주 레이더", "스윙 타점 스캐너", "자금 흐름 네트워크 맵", "ETF 스캐너", "내 관심종목", "자동 모의투자"], horizontal=True, label_visibility="collapsed")
 
     # 1. 상단 매크로 지표 출력
     idx_data = get_macro_dashboard_data()
@@ -797,6 +857,19 @@ if check_password():
                         
                         briefing_container = st.container()
                         
+                        # 🌟 [신규 기능 3] 실시간 거래량 폭발 및 계절성 지표 화면 출력
+                        burst_ratio, exp_vol, vma_20 = calculate_realtime_volume_burst(df_chart)
+                        seasonality_text = check_seasonality(df_chart)
+                    
+                        st.markdown("---")
+                        st.subheader("🔥 실시간 거래량 및 계절성 (Seasonality)")
+                        vol_col1, vol_col2, vol_col3 = st.columns(3)
+                    
+                        vol_color = "normal" if burst_ratio > 100 else "off"
+                        vol_col1.metric("실시간 거래량 폭발 지수", f"{burst_ratio:.0f}%", "20일 평균 돌파!" if burst_ratio > 100 else "거래량 미달", delta_color=vol_color)
+                        vol_col2.metric("오늘 예상 마감 거래량", f"{int(exp_vol):,} 주")
+                        vol_col3.info(f"📅 **계절성:** {seasonality_text}")
+                    
                         with st.expander("🎛️ 매크로 스트레스 테스트 (What-If 시뮬레이터)", expanded=False):
                             st.info("만약 오늘 밤 나스닥이 폭락하거나 환율이 치솟는다면, 이 종목의 내일 상승 확률은 어떻게 변할지 테스트해보세요.")
                             col_s1, col_s2, col_s3 = st.columns(3)
@@ -1095,3 +1168,173 @@ if check_password():
         if st.sidebar.button("🔄 실시간 스캔 강제 실행"):
             st.cache_data.clear()
             st.rerun()
+    
+    # 🌟 [신규 기능 2] 내 관심종목 (Watchlist) 모니터링
+    elif menu == "내 관심종목":
+        st.title("⭐️ 나만의 관심종목 모니터링")
+        st.info("내가 보유 중이거나 눈여겨보는 종목들만 모아서 실시간 수급과 AI 확률을 비교합니다.")
+        
+        if "watchlist" not in st.session_state:
+            st.session_state["watchlist"] = ["삼성전자 (005930)", "SK하이닉스 (000660)"] # 기본값
+            
+        all_stocks = get_all_stock_list()
+        selected_stocks = st.multiselect("📌 관심종목 추가/삭제", all_stocks, default=st.session_state["watchlist"])
+        st.session_state["watchlist"] = selected_stocks
+        
+        if st.button("🚀 선택한 관심종목 AI 즉시 분석"):
+            if not selected_stocks:
+                st.warning("선택된 종목이 없습니다.")
+            else:
+                watch_results = []
+                prog_bar = st.progress(0)
+                macro_df = load_macro_feature_data()
+                
+                for i, item in enumerate(selected_stocks):
+                    import re
+                    match = re.match(r"(.*) \((.*)\)", item)
+                    if match: name, ticker = match.group(1), match.group(2)
+                    else: continue
+                    
+                    try:
+                        df_chart = fdr.DataReader(ticker, (datetime.now() - timedelta(days=200)).strftime('%Y-%m-%d'))
+                        feats_df, _, i_r, f_r, _ = prepare_master_features(ticker, df_chart, macro_df)
+                        burst_ratio, _, _ = calculate_realtime_volume_burst(df_chart)
+                        
+                        if not feats_df.empty and len(feats_df) >= 60:
+                            scaled = RobustScaler().fit_transform(feats_df.tail(60).values)
+                            inp = torch.FloatTensor(scaled).unsqueeze(0).to(device)
+                            with torch.no_grad(): gru_prob = torch.softmax(model_gru(inp), dim=1).cpu().numpy()[0][1]
+                            lgb_prob = model_lgb.predict_proba(scaled[-1].reshape(1, -1))[0][1]
+                            base_prob = (gru_prob * 0.5 + lgb_prob * 0.5) * 100
+                            
+                            curr_price = df_chart['Close'].iloc[-1]
+                            watch_results.append({
+                                "종목명": name, "현재가": int(curr_price),
+                                "AI 확률": base_prob, "거래량 폭발": burst_ratio,
+                                "외인수급": f_r * 100, "기관수급": i_r * 100
+                            })
+                    except: pass
+                    prog_bar.progress((i + 1) / len(selected_stocks))
+                
+                prog_bar.empty()
+                if watch_results:
+                    w_df = pd.DataFrame(watch_results)
+                    w_df['AI 확률'] = w_df['AI 확률'].apply(lambda x: f"{x:.1f}%")
+                    w_df['거래량 폭발'] = w_df['거래량 폭발'].apply(lambda x: f"{x:.0f}%")
+                    w_df['외인수급'] = w_df['외인수급'].apply(lambda x: f"{x:+.2f}%")
+                    w_df['기관수급'] = w_df['기관수급'].apply(lambda x: f"{x:+.2f}%")
+                    
+                    st.dataframe(w_df.sort_values("AI 확률", ascending=False).reset_index(drop=True), use_container_width=True)
+    
+    # 🌟 [신규 기능 5] 데이트레이딩 자동 모의투자 시스템
+    elif menu == "자동 모의투자":
+        st.title("🤖 데이트레이딩 자동 모의투자 (Paper Trading)")
+        st.info("오늘 아침 08:45에 스캔된 A급/S급 주도주(60% 이상)를 09:00 시가에 자동 매수하고, 15:00에 청산하는 시뮬레이터입니다.")
+
+        if os.path.exists(RESULT_CSV):
+            scan_df = pd.read_csv(RESULT_CSV)
+            # 60% 이상 타점만 모의투자 대상으로 선정
+            target_df = scan_df[scan_df['최종확률'] >= 60.0].copy()
+
+            if target_df.empty:
+                st.warning("💤 오늘 장은 AI 확률 60% 이상의 타점이 없어 모의투자를 쉬어갑니다 (관망).")
+            else:
+                # 💰 모의투자 기본 세팅
+                INITIAL_CAPITAL = 10000000 # 시작 원금 1,000만 원
+                num_stocks = len(target_df)
+                alloc_per_stock = INITIAL_CAPITAL // num_stocks # N빵 분할 매수
+                
+                portfolio = []
+                total_current_value = 0
+                
+                st.write("📊 **실시간 시장 데이터로 모의투자 포트폴리오를 구성 중입니다...**")
+                prog = st.progress(0)
+                
+                # 시가(09:00) 및 현재가 조회
+                for i, row in target_df.iterrows():
+                    ticker = str(row['코드']).zfill(6)
+                    try:
+                        # 오늘 일자 데이터 호출
+                        today_str = datetime.now().strftime('%Y-%m-%d')
+                        df_today = fdr.DataReader(ticker, today_str)
+                        
+                        if not df_today.empty:
+                            buy_price = df_today['Open'].iloc[-1]  # 09:00 시가
+                            curr_price = df_today['Close'].iloc[-1] # 현재가 (또는 마감가)
+                        else:
+                            # 장 시작 전이거나 데이터 지연 시 예측시점가격을 임시 사용
+                            buy_price = row['예측시점가격']
+                            curr_price = row['예측시점가격']
+                    except:
+                        buy_price = row['예측시점가격']
+                        curr_price = row['예측시점가격']
+
+                    if buy_price <= 0: buy_price = 1 # 0으로 나누기 방지
+                    
+                    # 투자 계산
+                    quantity = alloc_per_stock // buy_price
+                    invested = quantity * buy_price
+                    current_val = quantity * curr_price
+                    pnl_pct = ((curr_price - buy_price) / buy_price) * 100
+                    
+                    total_current_value += current_val
+                    
+                    portfolio.append({
+                        "시장": row.get('시장', '-'),
+                        "종목명": row['종목명'],
+                        "AI확률": f"{row['최종확률']:.1f}%",
+                        "매수가(09:00)": int(buy_price),
+                        "현재가": int(curr_price),
+                        "보유수량": int(quantity),
+                        "투자금액": int(invested),
+                        "평가금액": int(current_val),
+                        "수익률": pnl_pct
+                    })
+                    prog.progress((i + 1) / num_stocks)
+                
+                prog.empty()
+                
+                # 포트폴리오 요약 계산
+                pf_df = pd.DataFrame(portfolio)
+                total_invested = pf_df['투자금액'].sum()
+                total_pnl_krw = total_current_value - total_invested
+                total_pnl_pct = (total_pnl_krw / total_invested) * 100 if total_invested > 0 else 0
+                final_balance = total_current_value + (INITIAL_CAPITAL - total_invested) # 평가금액 + 남은 현금
+                
+                import pytz
+                now = datetime.now(pytz.timezone('Asia/Seoul'))
+                
+                # ⏰ 15:00 청산 로직 (시간 확인)
+                if now.hour >= 15:
+                    st.error(f"⏰ **15:00 장 마감 (청산 완료):** 모든 포트폴리오가 자동 매도되었습니다.")
+                    status_text = "최종 실현 손익"
+                else:
+                    st.success(f"🟢 **장중 실시간 추적 중 ({now.strftime('%H:%M')}):** 오후 3시에 자동 청산됩니다.")
+                    status_text = "실시간 평가 손익"
+
+                # 대시보드 메트릭 출력
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("시작 원금", f"{INITIAL_CAPITAL:,} 원")
+                col2.metric("총 매수 금액", f"{total_invested:,} 원")
+                col3.metric("현재 총 자산", f"{int(final_balance):,} 원")
+                col4.metric(status_text, f"{int(total_pnl_krw):,} 원", f"{total_pnl_pct:+.2f}%")
+
+                st.markdown("---")
+                st.subheader("📋 포트폴리오 상세 내역")
+                
+                # 예쁘게 포맷팅하여 출력
+                formatted_df = pf_df.style.format({
+                    "매수가(09:00)": "{:,}원",
+                    "현재가": "{:,}원",
+                    "투자금액": "{:,}원",
+                    "평가금액": "{:,}원",
+                    "수익률": "{:+.2f}%"
+                }).map(
+                    lambda x: 'color: #FF4B4B; font-weight: bold' if x > 0 else ('color: #1C83E1' if x < 0 else 'color: gray'),
+                    subset=["수익률"]
+                )
+                
+                st.dataframe(formatted_df, use_container_width=True)
+
+        else:
+            st.warning("⚠️ 아직 사전 분석 결과 파일(CSV)이 없습니다. 아침 스캔이 완료되어야 모의투자가 시작됩니다.")
