@@ -86,7 +86,7 @@ class SwingBinaryMasterGRU(nn.Module):
 
 def analyze_with_gemini(ticker_name, news_items, custom_event=""):
     try:
-        api_key = st.secrets.get("GEMINI_API_KEY가")
+        api_key = st.secrets.get("GEMINI_API_KEY")
         if not api_key:
             return 0.0, "⚠️ 스트림릿 Secrets에 GEMINI_API_KEY가 설정되지 않았습니다."
 
