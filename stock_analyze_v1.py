@@ -91,8 +91,8 @@ def analyze_with_gemini(ticker_name, news_items, custom_event=""):
             return 0.0, "⚠️ 스트림릿 Secrets에 GEMINI_API_KEY가 설정되지 않았습니다."
 
         genai.configure(api_key=api_key)
-        # 무료이면서 가장 빠르고 똑똑한 1.5 Flash 모델 사용
-        model = genai.GenerativeModel('gemini-1.5-flash') 
+        # 무료이면서 가장 빠르고 똑똑한 2.5 Flash 모델 사용
+        model = genai.GenerativeModel('gemini-2.5-flash') 
 
         # 최근 뉴스 5개 요약
         news_text = "\n".join([f"- {n['title']}" for n in news_items[:5]]) if news_items else "최근 주요 뉴스 없음"
