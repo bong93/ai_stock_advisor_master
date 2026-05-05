@@ -85,7 +85,7 @@ class SwingBinaryMasterGRU(nn.Module):
         return self.fc(c)
 
 @st.cache_data(ttl=1800) # 30분 동안 분석 결과를 기억하여 중복 과금을 막습니다!
-def analyze_with_llama3(ticker_name, news_text, custom_event=""):
+def analyze_with_llama3(ticker_name, custom_event): # 👈 news_text 매개변수 삭제
     try:
         api_key = st.secrets.get("GROQ_API_KEY")
         if not api_key:
@@ -95,15 +95,12 @@ def analyze_with_llama3(ticker_name, news_text, custom_event=""):
 
         prompt = f"""
         당신은 월스트리트 최고 헤지펀드의 매크로 퀀트 애널리스트입니다.
-        다음은 한국 증시의 '{ticker_name}' 종목에 대한 최근 뉴스 및 글로벌 매크로 이슈입니다.
-
-        [최근 뉴스]
-        {news_text}
+        사용자가 입력한 [글로벌 매크로 이슈]가 한국 증시의 '{ticker_name}' 종목의 단기 주가(1~2주)에 미칠 수혜/피해 역학관계를 분석하세요.
+        일반적인 시장 노이즈는 배제하고, 오직 입력된 이슈와의 논리적 연결고리에만 집중하십시오.
 
         [글로벌 매크로 이슈]
         {custom_event if custom_event else "특이사항 없음"}
 
-        위 정보를 종합하여 '{ticker_name}'의 단기 주가에 미칠 영향을 분석하세요.
         반드시 한국어(Korean)로 대답해야 하며, 아래의 엄격한 포맷을 준수하십시오.
 
         SCORE: (매우 악재 -10 부터 매우 호재 +10 사이의 정수로만 답변)
@@ -113,7 +110,7 @@ def analyze_with_llama3(ticker_name, news_text, custom_event=""):
         # 🌟 현존 가장 빠르고 가벼운 최신 Llama 3.1 8B 모델 호출
         chat_completion = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
-            model="llama-3.1-8b-instant", # 👈 이 부분을 표에 있는 이름으로 정확히 교체!
+            model="llama-3.1-8b-instant", 
             temperature=0.2,
         )
         
@@ -978,27 +975,30 @@ if check_password():
                         final_prob_pct = max(0.0, min(100.0, base_prob_pct + news_impact))
                         
                         st.markdown("---")
-                        # 🌟 [신규 UI] Groq Llama 3 초고속 엔진 장착
-                        st.subheader("⚡ Llama 3 초고속 역학 분석 (Groq API)")
-                        custom_event = st.text_input("💡 [선택] 주가에 영향을 줄 수 있는 글로벌 이슈를 입력하세요", placeholder="스페이스X 스타십 발사 성공, 호르무즈 해협 봉쇄 등")
-                        use_llama = st.checkbox("🚀 Llama 3 엔진으로 숨겨진 수혜/악재 역학 분석 실행")
+                        # 🌟 [신규 UI] 노이즈 차단 & Llama 3 타겟 분석
+                        st.subheader("⚡ Llama 3 매크로 역학 분석 (Groq API)")
+                        custom_event = st.text_input("💡 주가에 영향을 줄 수 있는 글로벌 매크로 이슈를 직접 입력하세요", placeholder="예: 이란-미국 갈등 격화로 인한 국제 유가 급등 등")
+                        use_llama = st.checkbox("🚀 입력한 이슈만으로 타겟 수혜/악재 역학 분석 실행")
 
                         llama_score = 0.0
                         llama_reason = ""
                         
                         if use_llama:
-                            with st.spinner("Llama 3가 빛의 속도로 역학 관계를 추론 중입니다..."):
-                                # 뉴스를 텍스트로 미리 묶어서 캐시 효율을 높임
-                                news_text_combined = "\n".join([f"- {n['title']}" for n in news_items[:5]]) if news_items else "뉴스 없음"
-                                
-                                llama_score, llama_reason = analyze_with_llama3(name, news_text_combined, custom_event)
-                                
-                                # 기존 FinBERT 뉴스 점수(가중치 3.0) + Llama 3 심층 분석 점수(가중치 0.5) 융합
-                                news_impact = (sentiment_score * 3.0) + (llama_score * 0.5) 
-                                
-                                st.success(f"**[Llama 3 분석 결과: {llama_score:+.0f}점]**\n\n{llama_reason}")
+                            if not custom_event.strip():
+                                st.warning("⚠️ 분석할 글로벌 이슈를 텍스트 박스에 먼저 입력해 주세요!")
+                                news_impact = 0.0
+                            else:
+                                with st.spinner(f"'{custom_event}' 이슈가 {name}에 미칠 영향을 추론 중입니다..."):
+                                    # 뉴스 텍스트 없이 오직 종목명과 이슈만 넘깁니다.
+                                    llama_score, llama_reason = analyze_with_llama3(name, custom_event)
+                                    
+                                    # 일반 뉴스 점수는 완전히 버리고, LLM의 이슈 판단 점수만 반영합니다.
+                                    news_impact = llama_score * 0.5 
+                                    
+                                    st.success(f"**[Llama 3 매크로 분석 결과: {llama_score:+.0f}점]**\n\n{llama_reason}")
                         else:
-                            news_impact = sentiment_score * 5.0
+                            # 🌟 체크박스를 켜지 않으면 외부 뉴스/이슈 노이즈를 0%로 완벽 차단합니다.
+                            news_impact = 0.0 
 
                         final_prob_pct = max(0.0, min(100.0, base_prob_pct + news_impact))
                         
