@@ -580,22 +580,24 @@ def generate_ai_briefing(name, base_prob, news_score, final_prob, for_ratio, ins
 def draw_ichimoku_chart(df_plot):
     fig = go.Figure()
     
+    # 🌟 [버그 수정] 화면에 보여줄 150일(약 6개월)치 데이터만 먼저 잘라냅니다!
+    start_idx = max(0, len(df_plot) - 146)
+    df_visible = df_plot.iloc[start_idx:].copy()
+    
     # 🌟 [신규 기능 1] 매물대 (Volume Profile) 계산 및 추가
-    df_valid = df_plot.dropna(subset=['Close', 'Volume'])
+    df_valid = df_visible.dropna(subset=['Close', 'Volume'])
     if not df_valid.empty:
         min_p, max_p = df_valid['Close'].min(), df_valid['Close'].max()
-        bins = np.linspace(min_p, max_p, 25) # 25개의 가격 구간으로 분할
+        bins = np.linspace(min_p, max_p, 25) 
         df_valid['bin'] = pd.cut(df_valid['Close'], bins=bins)
         vp = df_valid.groupby('bin', observed=False)['Volume'].sum()
         
-        # 🌟 [수정] 마우스를 올렸을 때 보여줄 가격 구간 텍스트를 미리 만듭니다.
         customdata = [f"{b.left:,.0f}원 ~ {b.right:,.0f}원" for b in vp.index]
         
         fig.add_trace(go.Bar(
             x=vp.values, y=[b.mid for b in vp.index], orientation='h',
             xaxis='x2', marker=dict(color='rgba(150, 150, 150, 0.4)', line=dict(width=0)),
             customdata=customdata,
-            # 🌟 [수정] hovertemplate을 적용하여 예쁜 툴팁을 띄웁니다.
             hovertemplate="<b>매물대 구간:</b> %{customdata}<br><b>누적 거래량:</b> %{x:,.0f}주<extra></extra>",
             showlegend=False, name='매물대'
         ))
@@ -619,29 +621,33 @@ def draw_ichimoku_chart(df_plot):
     return fig
 
 def calculate_realtime_volume_burst(df_chart):
-    """현재 시간 비례 '예상 마감 거래량'이 20일 평균 대비 몇 % 폭발 중인지 계산"""
     if len(df_chart) < 20: return 0.0, 0, 0
     
     curr_vol = df_chart['Volume'].iloc[-1]
-    vma_20 = df_chart['Volume'].iloc[-21:-1].mean() # 어제까지의 20일 평균 거래량
+    vma_20 = df_chart['Volume'].iloc[-21:-1].mean()
     if vma_20 == 0: return 0.0, curr_vol, 0
     
+    import pytz
     now = datetime.now(pytz.timezone('Asia/Seoul'))
+    today_date = now.date()
+    
+    # 🌟 [버그 수정] 불러온 데이터의 마지막 날짜 확인
+    last_row_date = df_chart.index[-1].date()
+    
     market_open = now.replace(hour=9, minute=0, second=0)
     market_close = now.replace(hour=15, minute=30, second=0)
     
-    # 장전이거나 장마감 이후, 또는 휴일인 경우
-    if now < market_open or now > market_close:
+    # 🌟 데이터가 오늘 날짜가 아니거나(어제 종가), 장전/장마감인 경우 뻥튀기(시간비례)를 하지 않습니다!
+    if last_row_date != today_date or now < market_open or now > market_close:
         return (curr_vol / vma_20) * 100, curr_vol, vma_20
         
     elapsed_mins = (now - market_open).total_seconds() / 60
-    if elapsed_mins < 5: elapsed_mins = 5 # 개장 직후 오류 방지
+    if elapsed_mins < 5: elapsed_mins = 5
     
     expected_daily_vol = curr_vol * (390.0 / elapsed_mins)
     burst_ratio = (expected_daily_vol / vma_20) * 100
     
     return burst_ratio, expected_daily_vol, vma_20
-
 def check_seasonality(df_chart):
     """과거 5년간 이번 달(Month)에 상승했던 확률(계절성)을 분석"""
     curr_month = datetime.now().month
