@@ -110,10 +110,10 @@ def analyze_with_llama3(ticker_name, news_text, custom_event=""):
         REASON: (수혜/피해 역학관계를 3줄 이내로 핵심만 요약)
         """
 
-        # 🌟 현존 가장 빠르고 가벼운 Llama 3 8B 모델 호출
+        # 🌟 현존 가장 빠르고 가벼운 최신 Llama 3.1 8B 모델 호출
         chat_completion = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
-            model="llama3-8b-8192", 
+            model="llama-3.1-8b-instant", # 👈 이 부분을 표에 있는 이름으로 정확히 교체!
             temperature=0.2,
         )
         
