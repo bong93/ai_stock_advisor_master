@@ -604,9 +604,10 @@ def draw_ichimoku_chart(df_plot):
     start_idx = max(0, len(df_plot) - 146)
     fig.update_layout(
         height=550, template="plotly_dark", xaxis_rangeslider_visible=False, 
-        xaxis=dict(type='date', range=[df_plot.index[start_idx], df_plot.index[-1]]), 
+        xaxis=dict(type='date', range=[df_plot.index[start_idx], df_plot.index[-1]], tickformat="%Y/%m"), 
         # 🌟 매물대가 차트 왼쪽 1/3 지점까지만 표시되도록 스케일 조정
         xaxis2=dict(overlaying='x', side='top', showgrid=False, showticklabels=False, range=[0, vp.max() * 3] if not df_valid.empty else [0,1]),
+        yaxis=dict(tickformat=",", ticksuffix="원"),
         margin=dict(l=10, r=10, t=30, b=10)
     )
     return fig
