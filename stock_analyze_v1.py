@@ -942,7 +942,8 @@ if check_password():
                         if timeframe != "일봉 (단기 5일)":
                             # 주봉/월봉 변환
                             rule = 'W-FRI' if timeframe == "주봉 (중기 4주)" else 'ME'
-                            df_chart_plot = df_chart.resample(rule).agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last'}).dropna()
+                            # 🌟 [에러 해결 핵심] 주봉/월봉으로 묶을 때 거래량(Volume)도 모두 합치도록 명령을 추가합니다!
+                            df_chart_plot = df_chart.resample(rule).agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last', 'Volume':'sum'}).dropna()
                             
                             # 일목균형표 기본선 계산
                             h9, l9 = df_chart_plot['High'].rolling(9).max(), df_chart_plot['Low'].rolling(9).min()
