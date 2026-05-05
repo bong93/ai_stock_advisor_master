@@ -1302,7 +1302,10 @@ if check_password():
             # 최초 구동 시, 차트가 예쁘게 시작하도록 올해 1월 1일 기준 1000만원 세팅
             initial_setup = pd.DataFrame([{'Date': pd.to_datetime(f"{curr_year}-01-01"), 'Invested': 0, 'PnL': 0, 'Balance': 10000000}])
             hist_df = pd.concat([hist_df, initial_setup], ignore_index=True)
-
+            
+        # 🌟 [에러 해결 핵심] Date 컬럼이 텍스트로 풀려있을 수 있으므로 무조건 시간 데이터로 묶어줍니다!
+        hist_df['Date'] = pd.to_datetime(hist_df['Date'])
+        
         # 올해 데이터만 필터링 (해가 바뀌면 작년 데이터는 무시되고 새롭게 시작됨)
         hist_this_year = hist_df[hist_df['Date'].dt.year == curr_year].copy()
         
