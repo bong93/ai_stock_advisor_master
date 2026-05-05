@@ -588,10 +588,16 @@ def draw_ichimoku_chart(df_plot):
         df_valid['bin'] = pd.cut(df_valid['Close'], bins=bins)
         vp = df_valid.groupby('bin', observed=False)['Volume'].sum()
         
+        # 🌟 [수정] 마우스를 올렸을 때 보여줄 가격 구간 텍스트를 미리 만듭니다.
+        customdata = [f"{b.left:,.0f}원 ~ {b.right:,.0f}원" for b in vp.index]
+        
         fig.add_trace(go.Bar(
             x=vp.values, y=[b.mid for b in vp.index], orientation='h',
-            xaxis='x2', marker=dict(color='rgba(150, 150, 150, 0.3)', line=dict(width=0)),
-            hoverinfo='skip', showlegend=False, name='매물대'
+            xaxis='x2', marker=dict(color='rgba(150, 150, 150, 0.4)', line=dict(width=0)),
+            customdata=customdata,
+            # 🌟 [수정] hovertemplate을 적용하여 예쁜 툴팁을 띄웁니다.
+            hovertemplate="<b>매물대 구간:</b> %{customdata}<br><b>누적 거래량:</b> %{x:,.0f}주<extra></extra>",
+            showlegend=False, name='매물대'
         ))
 
     # 기존 일목균형표 및 캔들 차트
@@ -1116,6 +1122,16 @@ if check_password():
             with st.spinner(f"{m_type} 시총 상위 50개 종목의 최근 60일 상관관계를 분석 중입니다..."):
                 fig = draw_correlation_network(market=m_type, top_n=50)
                 st.plotly_chart(fig, use_container_width=True)
+                
+                # 🌟 [신규 추가] 초보자를 위한 매물대 해석 가이드
+                with st.expander("💡 차트 왼쪽의 '매물대(회색 막대)' 보는 법"):
+                    st.markdown("""
+                        * **매물대란?** 과거 해당 가격대에서 주식이 얼마나 많이 거래되었는지를 나타내는 지표입니다.
+                        * **가장 긴 막대 (매물 집중 구간):** 이 가격대에서 사고판 사람이 가장 많다는 뜻입니다. 
+                        * 주가가 이 구간보다 **아래**에 있다면 뚫기 힘든 **강력한 저항선(악성 매물)**이 됩니다.
+                        * 주가가 이 구간보다 **위**에 있다면 떨어질 때 받쳐주는 **든든한 지지선** 역할을 합니다.
+                        * **마우스 활용:** 회색 막대에 마우스를 올리시면 정확한 '가격대 구간'과 '누적 거래량'을 확인하실 수 있습니다.
+                        """)
 
     # 🌟 [수정완료] ETF 스캐너 (CSV에서 데이터 로드)
     elif menu == "ETF 스캐너":
