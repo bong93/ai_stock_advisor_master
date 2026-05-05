@@ -43,7 +43,7 @@ jobs:
         python -m pip install --upgrade pip
         # requirements.txt가 있으면 설치하고, 없어도 아래에서 강제로 설치하여 에러를 방지합니다.
         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-        pip install requests pandas numpy torch scikit-learn pytz ta finance-datareader beautifulsoup4 lxml lightgbm joblib
+        pip install requests pandas numpy torch scikit-learn pytz ta finance-datareader beautifulsoup4 lxml lightgbm joblib holidays
 
     - name: 🌅 [자동] 장 시작 전 1,000종목 브리핑 실행 (08:10)
       if: github.event.schedule == '10 23 * * 0-4'
