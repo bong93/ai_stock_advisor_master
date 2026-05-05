@@ -16,6 +16,8 @@ import warnings
 import concurrent.futures  # 🌟 멀티스레딩 엔진
 import random              # 🌟 네이버 차단 우회용 난수 발생기
 import time
+import sys
+import holidays
 
 warnings.filterwarnings('ignore', category=FutureWarning)
 warnings.filterwarnings("ignore", message="X does not have valid feature names")
@@ -423,6 +425,24 @@ if __name__ == "__main__":
     
     kst = pytz.timezone('Asia/Seoul')
     now = datetime.now(kst)
-    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] {args.mode} 모드 실행 중...")
+    
+    # 🛡️ [신규 패치] 주말 및 휴장일 완벽 차단 방어막 🛡️
+    # 1. 주말 차단 (5: 토요일, 6: 일요일)
+    if now.weekday() >= 5:
+        print(f"[{now.strftime('%Y-%m-%d')}] 주말이므로 스캔을 실행하지 않고 봇을 종료합니다.")
+        sys.exit(0)
+        
+    # 2. 법정 공휴일 및 대체 공휴일 차단
+    kr_holidays = holidays.KR(years=now.year)
+    if now.date() in kr_holidays:
+        print(f"[{now.strftime('%Y-%m-%d')}] 법정 공휴일이므로 스캔을 실행하지 않고 봇을 종료합니다.")
+        sys.exit(0)
+        
+    # 3. 한국거래소(KRX) 특수 휴장일 차단 (5월 1일 근로자의 날, 12월 31일 연말 폐장일)
+    if (now.month == 5 and now.day == 1) or (now.month == 12 and now.day == 31):
+        print(f"[{now.strftime('%Y-%m-%d')}] KRX 특수 휴장일이므로 스캔을 실행하지 않고 봇을 종료합니다.")
+        sys.exit(0)
+        
+    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] {args.mode} 모드 정상 영업일 확인 완료. 스캔을 시작합니다...")
         
     run_scanner(args.mode)
