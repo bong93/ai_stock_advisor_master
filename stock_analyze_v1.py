@@ -20,7 +20,7 @@ import warnings
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import networkx as nx
 import pytz
-import google.generativeai as genai
+from groq import Groq
 
 # 🌟 최상단 배치 (Streamlit 설정)
 st.set_page_config(page_title="AI Quant Master", layout="wide", initial_sidebar_state="expanded")
@@ -84,18 +84,14 @@ class SwingBinaryMasterGRU(nn.Module):
         c = torch.sum(w * out, dim=1)
         return self.fc(c)
 
-def analyze_with_gemini(ticker_name, news_items, custom_event=""):
+@st.cache_data(ttl=1800) # 30분 동안 분석 결과를 기억하여 중복 과금을 막습니다!
+def analyze_with_llama3(ticker_name, news_text, custom_event=""):
     try:
-        api_key = st.secrets.get("GEMINI_API_KEY")
+        api_key = st.secrets.get("GROQ_API_KEY")
         if not api_key:
-            return 0.0, "⚠️ 스트림릿 Secrets에 GEMINI_API_KEY가 설정되지 않았습니다."
+            return 0.0, "⚠️ 스트림릿 Secrets에 GROQ_API_KEY가 설정되지 않았습니다."
 
-        genai.configure(api_key=api_key)
-        # 무료이면서 가장 빠르고 똑똑한 2.5 Flash 모델 사용
-        model = genai.GenerativeModel('gemini-2.5-flash') 
-
-        # 최근 뉴스 5개 요약
-        news_text = "\n".join([f"- {n['title']}" for n in news_items[:5]]) if news_items else "최근 주요 뉴스 없음"
+        client = Groq(api_key=api_key)
 
         prompt = f"""
         당신은 월스트리트 최고 헤지펀드의 매크로 퀀트 애널리스트입니다.
@@ -104,20 +100,25 @@ def analyze_with_gemini(ticker_name, news_items, custom_event=""):
         [최근 뉴스]
         {news_text}
 
-        [글로벌 매크로 이슈 (사용자 직접 입력)]
+        [글로벌 매크로 이슈]
         {custom_event if custom_event else "특이사항 없음"}
 
-        위 정보를 종합하여 '{ticker_name}'의 단기(1~2주) 주가와 매출에 미칠 역학적 영향을 분석하세요.
-        답변은 반드시 아래의 엄격한 포맷을 준수해야 합니다.
+        위 정보를 종합하여 '{ticker_name}'의 단기 주가에 미칠 영향을 분석하세요.
+        반드시 한국어(Korean)로 대답해야 하며, 아래의 엄격한 포맷을 준수하십시오.
 
         SCORE: (매우 악재 -10 부터 매우 호재 +10 사이의 정수로만 답변)
-        REASON: (왜 그런 점수를 부여했는지, 수혜/피해 역학관계를 3줄 이내로 핵심만 요약)
+        REASON: (수혜/피해 역학관계를 3줄 이내로 핵심만 요약)
         """
 
-        response = model.generate_content(prompt)
-        text = response.text
+        # 🌟 현존 가장 빠르고 가벼운 Llama 3 8B 모델 호출
+        chat_completion = client.chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
+            model="llama3-8b-8192", 
+            temperature=0.2,
+        )
+        
+        text = chat_completion.choices[0].message.content
 
-        # 정규식으로 AI의 답변에서 점수와 이유만 깔끔하게 추출
         import re
         score_match = re.search(r"SCORE:\s*([+-]?\d+)", text)
         reason_match = re.search(r"REASON:\s*(.+)", text, re.DOTALL)
@@ -129,7 +130,7 @@ def analyze_with_gemini(ticker_name, news_items, custom_event=""):
 
     except Exception as e:
         return 0.0, f"LLM 분석 중 오류 발생: {e}"
-        
+
 def generate_unified_market_briefing(up_df, th_df):
     if up_df.empty or th_df.empty:
         return "데이터가 부족하여 종합 브리핑을 생성할 수 없습니다."
@@ -977,22 +978,27 @@ if check_password():
                         final_prob_pct = max(0.0, min(100.0, base_prob_pct + news_impact))
                         
                         st.markdown("---")
-                        st.subheader("🧠 Gemini LLM 딥러닝 역학 분석 (무료 API)")
-                        custom_event = st.text_input("💡 [선택] 주가에 영향을 줄 수 있는 글로벌 이슈를 입력하세요 (예: 스페이스X 스타십 발사 성공, 호르무즈 해협 봉쇄 등)", placeholder="입력하지 않으면 기본 뉴스만 분석합니다.")
-                        use_gemini = st.checkbox("🤖 Gemini 1.5 Flash 엔진으로 숨겨진 수혜/악재 역학 분석 실행")
+                        # 🌟 [신규 UI] Groq Llama 3 초고속 엔진 장착
+                        st.subheader("⚡ Llama 3 초고속 역학 분석 (Groq API)")
+                        custom_event = st.text_input("💡 [선택] 주가에 영향을 줄 수 있는 글로벌 이슈를 입력하세요", placeholder="스페이스X 스타십 발사 성공, 호르무즈 해협 봉쇄 등")
+                        use_llama = st.checkbox("🚀 Llama 3 엔진으로 숨겨진 수혜/악재 역학 분석 실행")
 
-                        gemini_score = 0.0
-                        gemini_reason = ""
+                        llama_score = 0.0
+                        llama_reason = ""
                         
-                        if use_gemini:
-                            with st.spinner("Gemini AI가 글로벌 이벤트와 종목 간의 역학 관계를 추론 중입니다..."):
-                                gemini_score, gemini_reason = analyze_with_gemini(name, news_items, custom_event)
-                                # 기존 FinBERT 뉴스 점수(가중치 3.0) + Gemini 심층 분석 점수(가중치 0.5) 융합
-                                news_impact = (sentiment_score * 3.0) + (gemini_score * 0.5) 
+                        if use_llama:
+                            with st.spinner("Llama 3가 빛의 속도로 역학 관계를 추론 중입니다..."):
+                                # 뉴스를 텍스트로 미리 묶어서 캐시 효율을 높임
+                                news_text_combined = "\n".join([f"- {n['title']}" for n in news_items[:5]]) if news_items else "뉴스 없음"
                                 
-                                st.success(f"**[Gemini 분석 결과: {gemini_score:+.0f}점]**\n\n{gemini_reason}")
+                                llama_score, llama_reason = analyze_with_llama3(name, news_text_combined, custom_event)
+                                
+                                # 기존 FinBERT 뉴스 점수(가중치 3.0) + Llama 3 심층 분석 점수(가중치 0.5) 융합
+                                news_impact = (sentiment_score * 3.0) + (llama_score * 0.5) 
+                                
+                                st.success(f"**[Llama 3 분석 결과: {llama_score:+.0f}점]**\n\n{llama_reason}")
                         else:
-                            news_impact = sentiment_score * 5.0 # Gemini 미사용 시 기존 로직 유지
+                            news_impact = sentiment_score * 5.0
 
                         final_prob_pct = max(0.0, min(100.0, base_prob_pct + news_impact))
                         
