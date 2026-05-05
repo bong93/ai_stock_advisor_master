@@ -798,7 +798,18 @@ model_gru, model_lgb, device = load_ensemble_models(GRU_PATH, LGB_PATH)
 
 if check_password():
     menu = st.sidebar.radio("메뉴 선택", ["단일 종목 스캐너", "섹터 주도주 레이더", "스윙 타점 스캐너", "자금 흐름 네트워크 맵", "ETF 스캐너", "내 관심종목", "자동 모의투자"], horizontal=True, label_visibility="collapsed")
-
+    
+    st.sidebar.markdown("---")
+    st.sidebar.warning(
+            "⚠️ **투자 경고 및 면책 조항**\n\n"
+            "본 시스템(AI Quant V6)이 제공하는 모든 AI 예측 확률, 타점, "
+            "그리고 모의투자 결과는 **단순 참고 및 교육/연구용**입니다.\n\n"
+            "절대적인 수익을 보장하지 않으며, "
+            "**실제 투자에 대한 최종 판단과 모든 책임은 오직 투자자 본인에게 있습니다.**\n\n"
+            "본 프로그램의 개발자 및 제공자는 사용자의 투자 손실에 대해 "
+            "**어떠한 민·형사상 법적 책임도 지지 않습니다.**"
+        )
+        
     # 1. 상단 매크로 지표 출력
     idx_data = get_macro_dashboard_data()
     st.subheader("📊 글로벌 실시간 지표")
