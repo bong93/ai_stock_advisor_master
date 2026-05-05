@@ -1276,118 +1276,163 @@ if check_password():
                     
                     st.dataframe(w_df.sort_values("AI 확률", ascending=False).reset_index(drop=True), use_container_width=True)
     
-    # 🌟 [신규 기능 5] 데이트레이딩 자동 모의투자 시스템
+    # 🌟 [업그레이드 완결판] 누적식 자동 모의투자 및 연간 수익률 차트
     elif menu == "자동 모의투자":
-        st.title("🤖 데이트레이딩 자동 모의투자 (Paper Trading)")
-        st.info("오늘 아침 08:45에 스캔된 A급/S급 주도주(60% 이상)를 09:00 시가에 자동 매수하고, 15:00에 청산하는 시뮬레이터입니다.")
+        st.title("🤖 데이트레이딩 자동 모의투자 (복리 누적 시스템)")
+        st.info("매일 장이 열리면 AI 추천 주도주를 매매하며, 매일의 수익이 누적되어 다음 날의 투자 원금이 됩니다. (매년 1월 1일 1,000만 원으로 리셋)")
+
+        import os
+        import pandas as pd
+        from datetime import datetime
+        import pytz
+        import plotly.graph_objects as go
+
+        # 📂 누적 기록을 저장할 비밀 장부 파일
+        HISTORY_CSV = "mock_invest_history.csv"
+        now = datetime.now(pytz.timezone('Asia/Seoul'))
+        today_str = now.strftime('%Y-%m-%d')
+        curr_year = now.year
+
+        # 1. 누적 데이터 로드 및 연도별 초기화 로직
+        if os.path.exists(HISTORY_CSV):
+            hist_df = pd.read_csv(HISTORY_CSV)
+            hist_df['Date'] = pd.to_datetime(hist_df['Date'])
+        else:
+            hist_df = pd.DataFrame(columns=['Date', 'Invested', 'PnL', 'Balance'])
+            # 최초 구동 시, 차트가 예쁘게 시작하도록 올해 1월 1일 기준 1000만원 세팅
+            initial_setup = pd.DataFrame([{'Date': pd.to_datetime(f"{curr_year}-01-01"), 'Invested': 0, 'PnL': 0, 'Balance': 10000000}])
+            hist_df = pd.concat([hist_df, initial_setup], ignore_index=True)
+
+        # 올해 데이터만 필터링 (해가 바뀌면 작년 데이터는 무시되고 새롭게 시작됨)
+        hist_this_year = hist_df[hist_df['Date'].dt.year == curr_year].copy()
+        
+        # '오늘' 이전까지의 기록 중 가장 마지막 잔고를 오늘의 '시작 원금'으로 설정
+        hist_before_today = hist_this_year[hist_this_year['Date'].dt.strftime('%Y-%m-%d') < today_str]
+        if hist_before_today.empty:
+            INITIAL_CAPITAL = 10000000
+        else:
+            INITIAL_CAPITAL = hist_before_today.iloc[-1]['Balance']
+
+        # 2. 오늘 타점 분석 및 실시간 수익률 계산
+        total_invested = 0
+        total_current_value = 0
+        total_pnl_krw = 0
+        final_balance = INITIAL_CAPITAL
+        portfolio = []
 
         if os.path.exists(RESULT_CSV):
             scan_df = pd.read_csv(RESULT_CSV)
-            # 60% 이상 타점만 모의투자 대상으로 선정
             target_df = scan_df[scan_df['최종확률'] >= 60.0].copy()
 
             if target_df.empty:
-                st.warning("💤 오늘 장은 AI 확률 60% 이상의 타점이 없어 모의투자를 쉬어갑니다 (관망).")
+                st.warning("💤 오늘 장은 AI 확률 60% 이상의 타점이 없어 매매를 쉬어갑니다 (이전 잔고 유지).")
             else:
-                # 💰 모의투자 기본 세팅
-                INITIAL_CAPITAL = 10000000 # 시작 원금 1,000만 원
+                target_df = target_df.reset_index(drop=True)
                 num_stocks = len(target_df)
-                alloc_per_stock = INITIAL_CAPITAL // num_stocks # N빵 분할 매수
+                alloc_per_stock = INITIAL_CAPITAL // num_stocks # 누적된 원금으로 N빵 분할
                 
-                portfolio = []
-                total_current_value = 0
-                
-                st.write("📊 **실시간 시장 데이터로 모의투자 포트폴리오를 구성 중입니다...**")
+                st.write("📊 **실시간 시장 데이터로 포트폴리오 수익률을 추적 중입니다...**")
                 prog = st.progress(0)
                 
-                # 🌟 [에러 해결 핵심] 꼬여있는 기존 엑셀 줄 번호를 0부터 다시 깔끔하게 정렬합니다.
-                target_df = target_df.reset_index(drop=True)
-                
-                # 시가(09:00) 및 현재가 조회
                 for i, row in target_df.iterrows():
                     ticker = str(row['코드']).zfill(6)
                     try:
-                        # 오늘 일자 데이터 호출
-                        today_str = datetime.now().strftime('%Y-%m-%d')
                         df_today = fdr.DataReader(ticker, today_str)
-                        
                         if not df_today.empty:
-                            buy_price = df_today['Open'].iloc[-1]  # 09:00 시가
-                            curr_price = df_today['Close'].iloc[-1] # 현재가 (또는 마감가)
+                            buy_price = df_today['Open'].iloc[-1]
+                            curr_price = df_today['Close'].iloc[-1]
                         else:
-                            # 장 시작 전이거나 데이터 지연 시 예측시점가격을 임시 사용
-                            buy_price = row['예측시점가격']
-                            curr_price = row['예측시점가격']
+                            buy_price, curr_price = row['예측시점가격'], row['예측시점가격']
                     except:
-                        buy_price = row['예측시점가격']
-                        curr_price = row['예측시점가격']
+                        buy_price, curr_price = row['예측시점가격'], row['예측시점가격']
 
-                    if buy_price <= 0: buy_price = 1 # 0으로 나누기 방지
+                    if buy_price <= 0: buy_price = 1 
                     
-                    # 투자 계산
                     quantity = alloc_per_stock // buy_price
                     invested = quantity * buy_price
                     current_val = quantity * curr_price
                     pnl_pct = ((curr_price - buy_price) / buy_price) * 100
                     
                     total_current_value += current_val
+                    total_invested += invested
                     
                     portfolio.append({
-                        "시장": row.get('시장', '-'),
-                        "종목명": row['종목명'],
-                        "AI확률": f"{row['최종확률']:.1f}%",
-                        "매수가(09:00)": int(buy_price),
-                        "현재가": int(curr_price),
-                        "보유수량": int(quantity),
-                        "투자금액": int(invested),
-                        "평가금액": int(current_val),
-                        "수익률": pnl_pct
+                        "시장": row.get('시장', '-'), "종목명": row['종목명'], "AI확률": f"{row['최종확률']:.1f}%",
+                        "매수가(09:00)": int(buy_price), "현재가": int(curr_price),
+                        "보유수량": int(quantity), "투자금액": int(invested),
+                        "평가금액": int(current_val), "수익률": pnl_pct
                     })
                     prog.progress((i + 1) / num_stocks)
                 
                 prog.empty()
-                
-                # 포트폴리오 요약 계산
-                pf_df = pd.DataFrame(portfolio)
-                total_invested = pf_df['투자금액'].sum()
                 total_pnl_krw = total_current_value - total_invested
-                total_pnl_pct = (total_pnl_krw / total_invested) * 100 if total_invested > 0 else 0
-                final_balance = total_current_value + (INITIAL_CAPITAL - total_invested) # 평가금액 + 남은 현금
-                
-                import pytz
-                now = datetime.now(pytz.timezone('Asia/Seoul'))
-                
-                # ⏰ 15:00 청산 로직 (시간 확인)
-                if now.hour >= 15:
-                    st.error(f"⏰ **15:00 장 마감 (청산 완료):** 모든 포트폴리오가 자동 매도되었습니다.")
-                    status_text = "최종 실현 손익"
-                else:
-                    st.success(f"🟢 **장중 실시간 추적 중 ({now.strftime('%H:%M')}):** 오후 3시에 자동 청산됩니다.")
-                    status_text = "실시간 평가 손익"
-
-                # 대시보드 메트릭 출력
-                col1, col2, col3, col4 = st.columns(4)
-                col1.metric("시작 원금", f"{INITIAL_CAPITAL:,} 원")
-                col2.metric("총 매수 금액", f"{total_invested:,} 원")
-                col3.metric("현재 총 자산", f"{int(final_balance):,} 원")
-                col4.metric(status_text, f"{int(total_pnl_krw):,} 원", f"{total_pnl_pct:+.2f}%")
-
-                st.markdown("---")
-                st.subheader("📋 포트폴리오 상세 내역")
-                
-                # 예쁘게 포맷팅하여 출력
-                formatted_df = pf_df.style.format({
-                    "매수가(09:00)": "{:,}원",
-                    "현재가": "{:,}원",
-                    "투자금액": "{:,}원",
-                    "평가금액": "{:,}원",
-                    "수익률": "{:+.2f}%"
-                }).map(
-                    lambda x: 'color: #FF4B4B; font-weight: bold' if x > 0 else ('color: #1C83E1' if x < 0 else 'color: gray'),
-                    subset=["수익률"]
-                )
-                
-                st.dataframe(formatted_df, use_container_width=True)
-
+                final_balance = total_current_value + (INITIAL_CAPITAL - total_invested) 
         else:
-            st.warning("⚠️ 아직 사전 분석 결과 파일(CSV)이 없습니다. 아침 스캔이 완료되어야 모의투자가 시작됩니다.")
+            st.warning("⚠️ 아직 사전 분석 결과 파일(CSV)이 없습니다.")
+
+        # 3. ⏰ 15:00 장 마감 시 '장부'에 최종 기록 저장 (영구 누적)
+        if now.hour >= 15:
+            if not target_df.empty: st.error(f"⏰ **15:00 장 마감 (청산 완료):** 모든 포트폴리오가 자동 매도되어 오늘 잔고가 확정되었습니다.")
+            status_text = "최종 실현 손익"
+            
+            # 오늘 날짜로 기록이 없으면 장부에 새로 적고, 있으면 덮어씌움
+            if today_str not in hist_df['Date'].dt.strftime('%Y-%m-%d').values:
+                new_record = pd.DataFrame([{'Date': pd.to_datetime(today_str), 'Invested': total_invested, 'PnL': total_pnl_krw, 'Balance': final_balance}])
+                hist_df = pd.concat([hist_df, new_record], ignore_index=True)
+            else:
+                idx = hist_df.index[hist_df['Date'].dt.strftime('%Y-%m-%d') == today_str].tolist()[0]
+                hist_df.loc[idx, ['Invested', 'PnL', 'Balance']] = [total_invested, total_pnl_krw, final_balance]
+            
+            hist_df.to_csv(HISTORY_CSV, index=False)
+            hist_this_year = hist_df[hist_df['Date'].dt.year == curr_year].copy()
+        else:
+            if not target_df.empty: st.success(f"🟢 **장중 실시간 추적 중 ({now.strftime('%H:%M')}):** 오후 3시에 최종 잔고가 장부에 누적 기록됩니다.")
+            status_text = "실시간 평가 손익"
+
+        # 4. 📈 연간 누적 수익률 차트 및 메트릭 출력
+        ytd_pnl = final_balance - 10000000
+        ytd_pnl_pct = (ytd_pnl / 10000000) * 100
+
+        st.markdown("---")
+        st.subheader(f"📈 {curr_year}년 누적 자산 성장 곡선 (YTD: {ytd_pnl_pct:+.2f}%)")
+        
+        plot_df = hist_this_year.copy()
+        # 장중(15시 이전)이면, '현재 실시간 잔고'를 차트 끝에 가상의 점으로 연결해서 보여줌
+        if now.hour < 15 and today_str not in plot_df['Date'].dt.strftime('%Y-%m-%d').values:
+            temp_record = pd.DataFrame([{'Date': pd.to_datetime(today_str), 'Balance': final_balance}])
+            plot_df = pd.concat([plot_df, temp_record], ignore_index=True)
+
+        fig_eq = go.Figure()
+        fig_eq.add_trace(go.Scatter(
+            x=plot_df['Date'], y=plot_df['Balance'], mode='lines+markers', line=dict(color='#00ffcc', width=3),
+            marker=dict(size=6, color='white'), hovertemplate="%{x|%Y-%m-%d}<br>잔고: %{y:,.0f}원<extra></extra>"
+        ))
+        
+        # Y축 범위를 현재 잔고 수준에 맞게 다이나믹하게 조절
+        min_bal, max_bal = plot_df['Balance'].min(), plot_df['Balance'].max()
+        if min_bal == max_bal: min_bal, max_bal = 9000000, 11000000
+        
+        fig_eq.update_layout(
+            height=350, template="plotly_dark", margin=dict(l=10, r=10, t=10, b=10),
+            yaxis=dict(tickformat=",", ticksuffix="원", range=[min_bal * 0.98, max_bal * 1.02]),
+            xaxis=dict(tickformat="%m/%d")
+        )
+        st.plotly_chart(fig_eq, use_container_width=True)
+
+        # 요약 상황판
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("오늘의 시작 원금", f"{int(INITIAL_CAPITAL):,} 원")
+        col2.metric("오늘 배팅된 금액", f"{int(total_invested):,} 원")
+        col3.metric("현재 총 자산", f"{int(final_balance):,} 원", f"{ytd_pnl_pct:+.2f}% (연 누적)")
+        total_pnl_pct = (total_pnl_krw / total_invested * 100) if total_invested > 0 else 0
+        col4.metric(f"오늘 {status_text}", f"{int(total_pnl_krw):,} 원", f"{total_pnl_pct:+.2f}% (일일)")
+
+        if portfolio:
+            st.markdown("---")
+            st.subheader("📋 오늘 포트폴리오 실시간 내역")
+            pf_df = pd.DataFrame(portfolio)
+            formatted_df = pf_df.style.format({
+                "매수가(09:00)": "{:,}원", "현재가": "{:,}원", "투자금액": "{:,}원",
+                "평가금액": "{:,}원", "수익률": "{:+.2f}%"
+            }).map(lambda x: 'color: #FF4B4B; font-weight: bold' if x > 0 else ('color: #1C83E1' if x < 0 else 'color: gray'), subset=["수익률"])
+            st.dataframe(formatted_df, use_container_width=True)
