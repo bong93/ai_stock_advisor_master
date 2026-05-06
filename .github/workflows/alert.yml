@@ -72,6 +72,6 @@ jobs:
         git commit -m "Data Update: $(date +'%Y-%m-%d %H:%M') AI 모델 1,000종목 분석 완료" || echo "No changes to commit"
         
         # 🌟 충돌 해결의 핵심: 푸시하기 전에 깃허브의 최신 상태를 강제로 가져와 합침
-        git pull origin main --rebase
+        git pull origin main --no-rebase -X ours
         
         git push origin main
