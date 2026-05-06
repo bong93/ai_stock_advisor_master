@@ -3,9 +3,9 @@ name: AI Quant V6 Discord Bot
 on:
   schedule:
     # 🌟 [신규 스케줄] UTC 기준 시간 설정 (KST = UTC + 9)
-    - cron: '0 21 * * 0-4'  # KST 06:00 AM (월~금) -> 새벽 전 종목 딥스캔 및 CSV 저장
-    - cron: '30 23 * * 0-4' # KST 08:30 AM (월~금) -> 장 시작 전 디스코드 알람 전송
-    - cron: '0 7 * * 1-5'   # KST 16:00 PM (월~금) -> 장 마감 후 채점표 전송
+    - cron: '12 21 * * 0-4'  # KST 06:12 AM (월~금) -> 새벽 전 종목 딥스캔 및 CSV 저장
+    - cron: '33 23 * * 0-4'  # KST 08:33 AM (월~금) -> 장 시작 전 디스코드 알람 전송
+    - cron: '11 7 * * 1-5'   # KST 16:11 PM (월~금) -> 장 마감 후 채점표 전송
   
   # 🚀 수동 실행 버튼
   workflow_dispatch:
