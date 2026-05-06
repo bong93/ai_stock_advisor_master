@@ -2,8 +2,10 @@ name: AI Quant V6 Discord Bot
 
 on:
   schedule:
-    - cron: '10 23 * * 0-4' # KST 08:10 AM (월~금)
-    - cron: '0 7 * * 1-5'   # KST 16:00 PM (월~금)
+    # 🌟 [신규 스케줄] UTC 기준 시간 설정 (KST = UTC + 9)
+    - cron: '0 21 * * 0-4'  # KST 06:00 AM (월~금) -> 새벽 전 종목 딥스캔 및 CSV 저장
+    - cron: '30 23 * * 0-4' # KST 08:30 AM (월~금) -> 장 시작 전 디스코드 알람 전송
+    - cron: '0 7 * * 1-5'   # KST 16:00 PM (월~금) -> 장 마감 후 채점표 전송
   
   # 🚀 수동 실행 버튼
   workflow_dispatch:
@@ -11,10 +13,11 @@ on:
       mode:
         description: '실행 모드 선택'
         required: true
-        default: 'morning'
+        default: 'morning_scan'
         type: choice
         options:
-          - morning
+          - morning_scan
+          - morning_alert
           - afternoon
           - monthly
 
@@ -41,15 +44,18 @@ jobs:
     - name: 📦 필요 라이브러리 강력 설치 (버전 충돌 방지)
       run: |
         python -m pip install --upgrade pip
-        # requirements.txt가 있으면 설치하고, 없어도 아래에서 강제로 설치하여 에러를 방지합니다.
         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
         pip install requests pandas numpy torch scikit-learn pytz ta finance-datareader beautifulsoup4 lxml lightgbm joblib holidays
 
-    - name: 🌅 [자동] 장 시작 전 1,000종목 브리핑 실행 (08:10)
-      if: github.event.schedule == '10 23 * * 0-4'
+    - name: 🌅 [자동] 새벽 전 종목 스캔 및 CSV 굽기 (06:00)
+      if: github.event.schedule == '0 21 * * 0-4'
+      run: python discord_alert.py --mode morning_scan
+
+    - name: 📢 [자동] 장 시작 전 주도주 브리핑 알람 (08:30)
+      if: github.event.schedule == '30 23 * * 0-4'
       env:
         DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-      run: python discord_alert.py --mode morning
+      run: python discord_alert.py --mode morning_alert
 
     - name: 🏁 [자동] 장 마감 후 채점표 실행 (16:00)
       if: github.event.schedule == '0 7 * * 1-5'
@@ -69,9 +75,9 @@ jobs:
         git config --global user.name "GitHub Actions Bot"
         git config --global user.email "actions@github.com"
         git add *.csv
-        git commit -m "Data Update: $(date +'%Y-%m-%d %H:%M') AI 모델 1,000종목 분석 완료" || echo "No changes to commit"
+        git commit -m "Data Update: $(date +'%Y-%m-%d %H:%M') AI 모델 전 종목 분석 완료" || echo "No changes to commit"
         
-        # 🌟 충돌 해결의 핵심: 푸시하기 전에 깃허브의 최신 상태를 강제로 가져와 합침
+        # 🌟 충돌 시 고민하지 말고 무조건 봇이 방금 만든 최신 파일(-X ours)로 강제 덮어쓰기!
         git pull origin main --no-rebase -X ours
         
         git push origin main
