@@ -54,7 +54,7 @@ def load_ensemble_models():
 
 def send_discord(title, fields_data, color):
     if not DISCORD_WEBHOOK_URL:
-        print("❌ 웹훅 주소가 없습니다!")
+        print("웹훅 주소가 없습니다!")
         return
         
     payload = {
@@ -323,26 +323,26 @@ def run_scanner(mode="morning"):
             
             completed_count += 1
             if completed_count % 50 == 0:
-                print(f"🔄 병렬 분석 진행 중... [{completed_count} / {len(tickers)}] 완료", flush=True)
+                print(f"병렬 분석 진행 중... [{completed_count} / {len(tickers)}] 완료", flush=True)
 
     rank_df = pd.DataFrame(results)
     if rank_df.empty: return
 
     if mode == "morning":
         rank_df.to_csv("morning_scan_result.csv", index=False, encoding='utf-8-sig')
-        print("✅ [1/4] 1,000종목 병렬 스캔 CSV 저장 완료")
+        print("[1/4] 1,000종목 병렬 스캔 CSV 저장 완료")
 
-        print("🔄 섹터/테마 데이터 수집 중...")
+        print("섹터/테마 데이터 수집 중...")
         try:
             _, detail_up = get_naver_market_data("upjong", 76)
             detail_up.to_csv("sector_upjong.csv", index=False, encoding='utf-8-sig')
             _, detail_th = get_naver_market_data("theme", 264)
             detail_th.to_csv("sector_theme.csv", index=False, encoding='utf-8-sig')
-            print("✅ [2/4] 섹터/테마 CSV 저장 완료")
+            print("[2/4] 섹터/테마 CSV 저장 완료")
         except Exception as e:
-            print(f"❌ 섹터/테마 수집 실패: {e}")
+            print(f"섹터/테마 수집 실패: {e}")
 
-        print("🔄 ETF 레이더 스캔 중...")
+        print("ETF 레이더 스캔 중...")
         try:
             etf_list = fdr.StockListing('ETF/KR')
             etf_tickers = etf_list.sort_values('Volume', ascending=False).head(20)['Symbol'].tolist()
@@ -358,25 +358,25 @@ def run_scanner(mode="morning"):
                     if res: etf_results.append(res)
             
             pd.DataFrame(etf_results).to_csv("etf_scanner_result.csv", index=False, encoding='utf-8-sig')
-            print("✅ [3/4] ETF CSV 저장 완료")
+            print("[3/4] ETF CSV 저장 완료")
         except Exception as e:
-            print(f"❌ ETF 수집 실패: {e}")
+            print(f"ETF 수집 실패: {e}")
 
-        print("✅ [4/4] 디스코드 알람 전송 준비...")
+        print("[4/4] 디스코드 알람 전송 준비...")
         s_class = rank_df[rank_df["최종확률"] >= 70.0].sort_values("최종확률", ascending=False)
         a_class = rank_df[(rank_df["최종확률"] >= 60.0) & (rank_df["최종확률"] < 70.0)].sort_values("최종확률", ascending=False)
         
         fields = []
         if not s_class.empty:
-            fields.append({"name": "🔥 **[S급] 초고도 확신 타점 (승률 85%)**", "value": "적극적인 비중 베팅을 고려할 만한 강력한 상승 신호입니다.", "inline": False})
-            fields.extend([{"name": f"🎯 [{row['시장']}] {row['종목명']}", "value": f"확률: **{row['최종확률']:.1f}%**\n💵 적정가: `{row['예측시점가격']:,}원`\n🚀 목표가: `{row['목표가']:,}원` (+4%)\n🛑 손절가: `{row['손절가']:,}원` (-3%)", "inline": False} for _, row in s_class.head(5).iterrows()])
+            fields.append({"name": "**[S급] 초고도 확신 타점 (승률 85%)**", "value": "적극적인 비중 베팅을 고려할 만한 강력한 상승 신호입니다.", "inline": False})
+            fields.extend([{"name": f"[{row['시장']}] {row['종목명']}", "value": f"확률: **{row['최종확률']:.1f}%**\n💵 적정가: `{row['예측시점가격']:,}원`\n🚀 목표가: `{row['목표가']:,}원` (+4%)\n🛑 손절가: `{row['손절가']:,}원` (-3%)", "inline": False} for _, row in s_class.head(5).iterrows()])
             
         if not a_class.empty:
-            fields.append({"name": "🚀 **[A급] 강한 확신 타점 (승률 60%↑)**", "value": "매수 우위 구간입니다. 수급과 호가를 체크하며 진입하세요.", "inline": False})
-            fields.extend([{"name": f"✅ [{row['시장']}] {row['종목명']}", "value": f"확률: **{row['최종확률']:.1f}%**\n💵 적정가: `{row['예측시점가격']:,}원`\n🚀 목표가: `{row['목표가']:,}원` (+4%)\n🛑 손절가: `{row['손절가']:,}원` (-3%)", "inline": False} for _, row in a_class.head(5).iterrows()])
+            fields.append({"name": "**[A급] 강한 확신 타점 (승률 60%↑)**", "value": "매수 우위 구간입니다. 수급과 호가를 체크하며 진입하세요.", "inline": False})
+            fields.extend([{"name": f"[{row['시장']}] {row['종목명']}", "value": f"확률: **{row['최종확률']:.1f}%**\n💵 적정가: `{row['예측시점가격']:,}원`\n🚀 목표가: `{row['목표가']:,}원` (+4%)\n🛑 손절가: `{row['손절가']:,}원` (-3%)", "inline": False} for _, row in a_class.head(5).iterrows()])
             
         if not fields:
-            fields.append({"name": "🛑 **관망 권장**", "value": "오늘 장은 60% 이상 확신할 만한 S급/A급 매수 타점이 포착되지 않았습니다.", "inline": False})
+            fields.append({"name": "**관망 권장**", "value": "오늘 장은 60% 이상 확신할 만한 S급/A급 매수 타점이 포착되지 않았습니다.", "inline": False})
             
         send_discord("🌅 [08:45] 1,000종목 스캔 AI 주도주 브리핑", fields, 15158332)
 
@@ -392,8 +392,8 @@ def run_scanner(mode="morning"):
             
             fields.append({"name": "💤 오늘 아침 추천 타점 없음 (관망 채점)", "value": "아침에는 60% 이상의 종목이 없어 매수를 쉬었습니다. 가장 점수가 높았던(B급 1등) 종목의 오후 결과를 복기합니다.", "inline": False})
             fields.append({
-                "name": f"📝 [{row['시장']}] {row['종목명']} (아침 확률: {row['최종확률']:.1f}%)", 
-                "value": f"시작가: {row['예측시점가격']:,}원 ➡️ 마감가: {row['오늘종가']:,}원\n관망 결과: {emoji} **({change_pct:+.2f}%)**", 
+                "name": f"[{row['시장']}] {row['종목명']} (아침 확률: {row['최종확률']:.1f}%)", 
+                "value": f"시작가: {row['예측시점가격']:,}원 마감가: {row['오늘종가']:,}원\n관망 결과: {emoji} **({change_pct:+.2f}%)**", 
                 "inline": False
             })
         else:
@@ -414,9 +414,9 @@ def run_scanner(mode="morning"):
                 
             avg_profit = total_profit / len(picks.head(10))
             win_rate = (hit_count / len(picks.head(10))) * 100
-            fields.insert(0, {"name": "📊 **[오늘의 상위 10픽 스나이퍼 성적표]**", "value": f"✅ 승률: **{win_rate:.0f}%**\n💰 평균 수익률: **{avg_profit:+.2f}%**\n---", "inline": False})
+            fields.insert(0, {"name": "📊 **[오늘의 상위 10픽 스나이퍼 성적표]**", "value": f"승률: **{win_rate:.0f}%**\n💰 평균 수익률: **{avg_profit:+.2f}%**\n---", "inline": False})
             
-        send_discord("🏁 [16:00] 오늘 아침 S/A급 픽 채점 결과", fields, 10181046)
+        send_discord("[16:00] 오늘 아침 S/A급 픽 채점 결과", fields, 10181046)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
