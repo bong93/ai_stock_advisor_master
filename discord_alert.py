@@ -395,6 +395,54 @@ def run_scanner(mode="morning_scan"):
         picks = rank_df[rank_df["최종확률"] >= 60.0].sort_values("최종확률", ascending=False)
         bottom_picks = rank_df.sort_values("최종확률", ascending=True).head(10) # 확률 하위 10개 추출
         fields = []
+
+        # -------------------------------------------------------------
+        # 🌟 [신규 추가] 모의투자 영구 장부 작성 후 깃허브에 박제하는 로직
+        HISTORY_CSV = "mock_invest_history.csv"
+        now = datetime.now(pytz.timezone('Asia/Seoul'))
+        today_str = now.strftime('%Y-%m-%d')
+        curr_year = now.year
+        
+        START_DATE = pd.to_datetime("2026-05-01") if curr_year == 2026 else pd.to_datetime(f"{curr_year}-01-01")
+
+        if os.path.exists(HISTORY_CSV):
+            hist_df = pd.read_csv(HISTORY_CSV)
+            hist_df['Date'] = pd.to_datetime(hist_df['Date'])
+            if hist_df.empty:
+                hist_df = pd.DataFrame([{'Date': START_DATE, 'Invested': 0, 'PnL': 0, 'Balance': 10000000}])
+        else:
+            hist_df = pd.DataFrame([{'Date': START_DATE, 'Invested': 0, 'PnL': 0, 'Balance': 10000000}])
+        
+        hist_before_today = hist_df[hist_df['Date'].dt.strftime('%Y-%m-%d') < today_str]
+        INITIAL_CAPITAL = 10000000 if hist_before_today.empty else hist_before_today.iloc[-1]['Balance']
+
+        total_invested = 0
+        total_pnl_krw = 0
+        
+        if not picks.empty:
+            alloc_per_stock = INITIAL_CAPITAL // len(picks)
+            for _, row in picks.iterrows():
+                buy_price = row['예측시점가격']
+                curr_price = row['오늘종가']
+                if buy_price > 0:
+                    quantity = alloc_per_stock // buy_price
+                    invested = quantity * buy_price
+                    current_val = quantity * curr_price
+                    total_invested += invested
+                    total_pnl_krw += (current_val - invested)
+                    
+        final_balance = INITIAL_CAPITAL + total_pnl_krw
+
+        # 장부에 기록 (오늘 기록이 이미 있다면 덮어쓰기)
+        if today_str not in hist_df['Date'].dt.strftime('%Y-%m-%d').values:
+            new_record = pd.DataFrame([{'Date': pd.to_datetime(today_str), 'Invested': total_invested, 'PnL': total_pnl_krw, 'Balance': final_balance}])
+            hist_df = pd.concat([hist_df, new_record], ignore_index=True)
+        else:
+            idx = hist_df.index[hist_df['Date'].dt.strftime('%Y-%m-%d') == today_str].tolist()[0]
+            hist_df.loc[idx, ['Invested', 'PnL', 'Balance']] = [total_invested, total_pnl_krw, final_balance]
+        
+        hist_df.to_csv(HISTORY_CSV, index=False, encoding='utf-8-sig')
+        print("✅ [자동 모의투자] 오늘자 수익률 장부(CSV) 기록 완료. 깃허브에 영구 저장됩니다.")
         
         if picks.empty:
             top_pick = rank_df.sort_values("최종확률", ascending=False).head(1)
