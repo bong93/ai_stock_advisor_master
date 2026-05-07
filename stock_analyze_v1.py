@@ -1418,15 +1418,17 @@ if check_password():
                     ticker = str(row['코드']).zfill(6)
                     try:
                         df_today = fdr.DataReader(ticker, today_str)
-                        if not df_today.empty:
+                        # 🌟 [버그 수정] 거래량(Volume)이 0이거나 시가(Open)가 0원이면 거래정지로 판별!
+                        if not df_today.empty and df_today['Open'].iloc[-1] > 0 and df_today['Volume'].iloc[-1] > 0:
                             buy_price = df_today['Open'].iloc[-1]
                             curr_price = df_today['Close'].iloc[-1]
                         else:
-                            buy_price, curr_price = row['예측시점가격'], row['예측시점가격']
+                            # 거래정지 종목은 살 수 없으므로, 돈을 현금으로 남겨두고 다음 종목으로 패스(Skip)
+                            prog.progress((i + 1) / num_stocks)
+                            continue 
                     except:
-                        buy_price, curr_price = row['예측시점가격'], row['예측시점가격']
-
-                    if buy_price <= 0: buy_price = 1 
+                        prog.progress((i + 1) / num_stocks)
+                        continue
                     
                     quantity = alloc_per_stock // buy_price
                     invested = quantity * buy_price
