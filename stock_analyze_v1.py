@@ -462,15 +462,60 @@ def load_ensemble_models(gru_path, lgb_path):
         return model_gru, joblib.load(lgb_path), device
     except: return None, None, device
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=1800)
 def get_macro_dashboard_data():
-    indices = {"USD/KRW": "USD/KRW", "NASDAQ": "IXIC", "S&P500": "US500", "KOSPI": "KS11", "KOSDAQ": "KQ11", "VIX": "VIX"}
     data = {}
+
+    # 🌟 1. 네이버 금융 실시간 크롤링 (환율, 유가, 달러인덱스)
+    try:
+        url = "https://finance.naver.com/marketindex/"
+        res = requests.get(url, headers={'User-agent': 'Mozilla/5.0'}, timeout=5)
+        res.encoding = 'euc-kr'
+        soup = BeautifulSoup(res.text, 'html.parser')
+
+        # 크롤링 타겟 CSS 선택자 매핑
+        targets = {
+            "USD/KRW": "a.head.usd .head_info",
+            "달러인덱스": "a.head.usd_idx .head_info",
+            "WTI유": "a.head.wti .head_info"
+        }
+
+        for name, selector in targets.items():
+            info = soup.select_one(selector)
+            if info:
+                # 현재 값 및 변동폭 추출
+                val = float(info.select_one('.value').text.replace(',', ''))
+                change_text = info.select_one('.change').text.replace(',', '')
+                change = float(change_text)
+
+                # 상승/하락 여부 확인 (클래스에 point_dn이 있으면 하락, point_up이면 상승)
+                if 'point_dn' in info.get('class', []):
+                    change = -change
+
+                # 등락률(%) 역산: 변동분 / (현재값 - 변동분) * 100
+                prev_val = val - change
+                pct = (change / prev_val) * 100 if prev_val != 0 else 0.0
+
+                data[name] = (val, pct)
+    except Exception as e:
+        print(f"네이버 매크로 크롤링 에러: {e}")
+
+    # 🌟 2. FDR 기반 실시간 지수 데이터 (나스닥, KOSPI, KOSDAQ, VIX)
+    indices = {"NASDAQ": "IXIC", "KOSPI": "KS11", "KOSDAQ": "KQ11", "VIX": "VIX"}
     for name, code in indices.items():
         try:
-            df = fdr.DataReader(code).tail(2)
-            data[name] = (df['Close'].iloc[-1], ((df['Close'].iloc[-1] - df['Close'].iloc[-2]) / df['Close'].iloc[-2]) * 100)
-        except: continue
+            # 빈칸(NaN) 데이터 완벽 제거
+            df = fdr.DataReader(code).dropna(subset=['Close']).tail(2)
+            if len(df) >= 2:
+                curr = df['Close'].iloc[-1]
+                prev = df['Close'].iloc[-2]
+                pct = ((curr - prev) / prev) * 100
+                data[name] = (curr, pct)
+            elif len(df) == 1:
+                data[name] = (df['Close'].iloc[-1], 0.0)
+        except:
+            continue
+
     return data
 
 @st.cache_data(ttl=3600*6)
@@ -876,9 +921,13 @@ if check_password():
     # 1. 상단 매크로 지표 출력
     idx_data = get_macro_dashboard_data()
     st.subheader("📊 글로벌 실시간 지표")
+    
+    # 🌟 늘어난 데이터 개수만큼 자동으로 화면(Column) 분할
     idx_cols = st.columns(len(idx_data))
+    
     for i, (k, v) in enumerate(idx_data.items()):
-        color = "inverse" if k in ["USD/KRW", "VIX"] else "normal"
+        # 환율, VIX, 달러인덱스, WTI유가 상승은 증시에 부담(악재)이므로 역색상(inverse) 적용
+        color = "inverse" if k in ["USD/KRW", "VIX", "달러인덱스", "WTI유"] else "normal"
         idx_cols[i].metric(k, f"{v[0]:,.2f}", f"{v[1]:+.2f}%", delta_color=color)
     
     st.markdown("---")
