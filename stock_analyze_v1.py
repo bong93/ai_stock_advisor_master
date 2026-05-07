@@ -1391,6 +1391,9 @@ if check_password():
             hist_df = pd.DataFrame(columns=['Date', 'Invested', 'PnL', 'Balance'])
             initial_setup = pd.DataFrame([{'Date': START_DATE, 'Invested': 0, 'PnL': 0, 'Balance': 10000000}])
             hist_df = pd.concat([hist_df, initial_setup], ignore_index=True)
+
+        # 🌟 [NameError 해결 핵심!] 하단 로직과 차트가 고장나지 않도록 변수명 연결
+        hist_this_year = hist_df.copy()
         
         # '오늘' 이전까지의 기록 중 가장 마지막 잔고를 오늘의 '시작 원금'으로 설정
         hist_before_today = hist_this_year[hist_this_year['Date'].dt.strftime('%Y-%m-%d') < today_str]
