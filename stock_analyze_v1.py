@@ -616,6 +616,11 @@ def get_v6_market_rankings(market_type="KOSPI", top_n=50):
     for i, ticker in enumerate(tickers):
         try:
             df_chart = fdr.DataReader(ticker, (datetime.now() - timedelta(days=200)).strftime('%Y-%m-%d'))
+            
+            # 🌟 [신규 방어막] 실시간 스캔 시 거래정지 종목 완벽 차단!
+            if df_chart.empty or df_chart['Volume'].iloc[-1] == 0 or df_chart['Open'].iloc[-1] == 0:
+                continue
+                
             feats_df, _, _, _, _ = prepare_master_features(ticker, df_chart, macro_df)
             if feats_df.empty or len(feats_df) < 60: continue
             
