@@ -249,6 +249,10 @@ def process_single_ticker(ticker, name, market, mode, macro_df, model_gru, model
         
         df = fdr.DataReader(ticker, (datetime.now() - pd.Timedelta(days=150)).strftime('%Y-%m-%d'))
         
+        # 🌟 [신규 방어막] 오늘(최근) 거래량이 0이거나 시가가 0원이면 거래정지 종목으로 간주하고 즉시 탈락!
+        if df.empty or df['Volume'].iloc[-1] == 0 or df['Open'].iloc[-1] == 0:
+            return None
+        
         if mode == "afternoon" and len(df) > 2:
             pred_df = df.iloc[:-1] 
         else:
