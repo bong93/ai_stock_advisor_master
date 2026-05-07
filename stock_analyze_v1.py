@@ -1370,21 +1370,27 @@ if check_password():
         today_str = now.strftime('%Y-%m-%d')
         curr_year = now.year
 
+        # 🌟 [지능형 시작일 설정] 
+        # 2026년이면 5월 1일 시작, 2027년부터는 해당 연도 1월 1일 시작
+        if curr_year == 2026:
+            START_DATE = pd.to_datetime("2026-05-01")
+        else:
+            START_DATE = pd.to_datetime(f"{curr_year}-01-01")
+            
         # 1. 누적 데이터 로드 및 연도별 초기화 로직
         if os.path.exists(HISTORY_CSV):
             hist_df = pd.read_csv(HISTORY_CSV)
             hist_df['Date'] = pd.to_datetime(hist_df['Date'])
+            hist_df = hist_df[hist_df['Date'] >= START_DATE].copy()
+            
+            # 만약 새해가 되었는데 첫 기록(1월 1일)이 없다면 초기화
+            if hist_df.empty:
+                initial_setup = pd.DataFrame([{'Date': START_DATE, 'Invested': 0, 'PnL': 0, 'Balance': 10000000}])
+                hist_df = initial_setup
         else:
             hist_df = pd.DataFrame(columns=['Date', 'Invested', 'PnL', 'Balance'])
-            # 최초 구동 시, 차트가 예쁘게 시작하도록 올해 1월 1일 기준 1000만원 세팅
-            initial_setup = pd.DataFrame([{'Date': pd.to_datetime(f"{curr_year}-01-01"), 'Invested': 0, 'PnL': 0, 'Balance': 10000000}])
+            initial_setup = pd.DataFrame([{'Date': START_DATE, 'Invested': 0, 'PnL': 0, 'Balance': 10000000}])
             hist_df = pd.concat([hist_df, initial_setup], ignore_index=True)
-            
-        # 🌟 [에러 해결 핵심] Date 컬럼이 텍스트로 풀려있을 수 있으므로 무조건 시간 데이터로 묶어줍니다!
-        hist_df['Date'] = pd.to_datetime(hist_df['Date'])
-        
-        # 올해 데이터만 필터링 (해가 바뀌면 작년 데이터는 무시되고 새롭게 시작됨)
-        hist_this_year = hist_df[hist_df['Date'].dt.year == curr_year].copy()
         
         # '오늘' 이전까지의 기록 중 가장 마지막 잔고를 오늘의 '시작 원금'으로 설정
         hist_before_today = hist_this_year[hist_this_year['Date'].dt.strftime('%Y-%m-%d') < today_str]
