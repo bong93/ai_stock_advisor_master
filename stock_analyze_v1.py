@@ -1515,23 +1515,14 @@ if check_password():
         else:
             st.warning("아직 사전 분석 결과 파일(CSV)이 없습니다.")
 
-        # 3. ⏰ 15:00 장 마감 시 '장부'에 최종 기록 저장 (영구 누적)
+        # 3. ⏰ 실시간 시뮬레이션 및 장 마감 판별 (스트림릿은 더 이상 파일을 저장하지 않음!)
         if now.hour >= 15:
             if not target_df.empty: st.error(f"**15:00 장 마감 (청산 완료):** 모든 포트폴리오가 자동 매도되어 오늘 잔고가 확정되었습니다.")
             status_text = "최종 실현 손익"
             
-            # 오늘 날짜로 기록이 없으면 장부에 새로 적고, 있으면 덮어씌움
-            if today_str not in hist_df['Date'].dt.strftime('%Y-%m-%d').values:
-                new_record = pd.DataFrame([{'Date': pd.to_datetime(today_str), 'Invested': total_invested, 'PnL': total_pnl_krw, 'Balance': final_balance}])
-                hist_df = pd.concat([hist_df, new_record], ignore_index=True)
-            else:
-                idx = hist_df.index[hist_df['Date'].dt.strftime('%Y-%m-%d') == today_str].tolist()[0]
-                hist_df.loc[idx, ['Invested', 'PnL', 'Balance']] = [total_invested, total_pnl_krw, final_balance]
-            
-            hist_df.to_csv(HISTORY_CSV, index=False)
-            hist_this_year = hist_df[hist_df['Date'].dt.year == curr_year].copy()
+            # 장 마감 후에는 스트림릿이 임의로 차트에 오늘 데이터를 그리지 않고 깃허브 봇이 만든 파일만 읽습니다.
         else:
-            if not target_df.empty: st.success(f"🟢 **장중 실시간 추적 중 ({now.strftime('%H:%M')}):** 오후 3시에 최종 잔고가 장부에 누적 기록됩니다.")
+            if not target_df.empty: st.success(f"🟢 **장중 실시간 추적 중 ({now.strftime('%H:%M')}):** 오후 4시에 깃허브 봇이 장부에 확정 기록합니다.")
             status_text = "실시간 평가 손익"
 
         # 4. 📈 연간 누적 수익률 차트 및 메트릭 출력
@@ -1542,8 +1533,9 @@ if check_password():
         st.subheader(f"📈 {curr_year}년 누적 자산 성장 곡선 (YTD: {ytd_pnl_pct:+.2f}%)")
         
         plot_df = hist_this_year.copy()
-        # 장중(15시 이전)이면, '현재 실시간 잔고'를 차트 끝에 가상의 점으로 연결해서 보여줌
-        if now.hour < 15 and today_str not in plot_df['Date'].dt.strftime('%Y-%m-%d').values:
+        
+        # 🌟 장중(15시 이전)이거나, 깃허브 봇이 아직 장부를 업데이트하기 전이라면 화면에만 가상으로 오늘 점을 찍어줌
+        if today_str not in plot_df['Date'].dt.strftime('%Y-%m-%d').values:
             temp_record = pd.DataFrame([{'Date': pd.to_datetime(today_str), 'Balance': final_balance}])
             plot_df = pd.concat([plot_df, temp_record], ignore_index=True)
 
