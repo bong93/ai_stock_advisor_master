@@ -325,9 +325,11 @@ def run_scanner(mode="morning_scan"):
     if not model_gru or not model_lgb: return
     
     try:
-        # 🌟 [신규 패치] 제한 해제: KOSPI/KOSDAQ 전체 종목 스캔
+        # 🌟 [롤백 패치] 크롤링 과부하 방지 및 타점 퀄리티 향상을 위해 거래대금 상위 1,000개로 타겟 축소
         df_krx = fdr.StockListing('KRX')
-        df_list = df_krx[df_krx['Market'].isin(['KOSPI', 'KOSDAQ'])]
+        df_kospi = df_krx[df_krx['Market'] == 'KOSPI'].sort_values('Amount', ascending=False).head(500)
+        df_kosdaq = df_krx[df_krx['Market'] == 'KOSDAQ'].sort_values('Amount', ascending=False).head(500)
+        df_list = pd.concat([df_kospi, df_kosdaq])
         
         tickers = df_list['Code'].tolist()
         names = df_list['Name'].tolist()
@@ -339,7 +341,10 @@ def run_scanner(mode="morning_scan"):
     macro_df = load_macro_feature_data()
     results = []
     
-    print(f"🚀 총 {len(tickers)}개 전 종목 멀티스레드 스캔 시작...")
+    # 출력 메시지도 1,000개에 맞춰 수정
+    print(f"🚀 총 {len(tickers)}개 종목 (거래대금 상위 1,000개) 멀티스레드 스캔 시작...")
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
         futures = {executor.submit(process_single_ticker, t, n, m, mode, macro_df, model_gru, model_lgb): t for t, n, m in zip(tickers, names, markets)}
