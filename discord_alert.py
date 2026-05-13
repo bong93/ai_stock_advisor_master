@@ -345,8 +345,6 @@ def run_scanner(mode="morning_scan"):
     print(f"🚀 총 {len(tickers)}개 종목 (거래대금 상위 1,000개) 멀티스레드 스캔 시작...")
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-    
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
         futures = {executor.submit(process_single_ticker, t, n, m, mode, macro_df, model_gru, model_lgb): t for t, n, m in zip(tickers, names, markets)}
         
         completed_count = 0
