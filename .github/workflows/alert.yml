@@ -47,8 +47,8 @@ jobs:
         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
         pip install requests pandas numpy torch scikit-learn pytz ta finance-datareader beautifulsoup4 lxml lightgbm joblib holidays
 
-    - name: 🌅 [자동] 새벽 전 종목 스캔 및 CSV 굽기 (06:12)
-      if: github.event.schedule == '12 21 * * 0-4'
+    - name: 🌅 [자동] 새벽 전 종목 스캔 및 CSV 굽기 (06:05)
+      if: github.event.schedule == '05 21 * * 0-4'
       run: python discord_alert.py --mode morning_scan
 
     - name: 📢 [자동] 장 시작 전 주도주 브리핑 알람 (08:33)
